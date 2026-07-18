@@ -1,0 +1,18 @@
+[project]
+name = "poc-prompts"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "poc-core",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/poc"]
+
+[tool.uv.sources]
+poc-core = { workspace = true }

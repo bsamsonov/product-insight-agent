@@ -1,0 +1,42 @@
+providers:
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    api_key_env: POC_GEMINI_API_KEY
+  groq:
+    base_url: https://api.groq.com/openai/v1
+    api_key_env: POC_GROQ_API_KEY
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    api_key_env: POC_DEEPSEEK_API_KEY
+  ollama:
+    base_url: http://localhost:11434/v1
+    api_key_env: POC_OLLAMA_API_KEY
+  omniroute:
+    base_url: http://localhost:21128/v1
+    api_key_env: POC_OMNIROUTE_API_KEY
+
+routes:
+  classifier:
+    primary:  { provider: gemini,    model: gemini-2.5-flash,        max_tokens: 256  }
+    fallback: { provider: groq,      model: llama-3.3-70b-versatile, max_tokens: 256  }
+  planner:
+    primary:  { provider: gemini,    model: gemini-2.5-pro,          max_tokens: 1500 }
+    fallback: { provider: groq,      model: llama-3.3-70b-versatile, max_tokens: 1500 }
+  summarizer:
+    primary:  { provider: gemini,    model: gemini-2.5-pro,          max_tokens: 1500 }
+    fallback: { provider: deepseek,  model: deepseek-chat,           max_tokens: 1500 }
+  judge:
+    primary:  { provider: gemini,    model: gemini-2.5-flash,        max_tokens: 800  }
+    fallback: { provider: groq,      model: llama-3.3-70b-versatile, max_tokens: 800  }
+  escalate:
+    primary:  { provider: deepseek,  model: deepseek-reasoner,       max_tokens: 2000 }
+    fallback: { provider: gemini,    model: gemini-2.5-pro,          max_tokens: 2000 }
+
+budgets:
+  per_request_usd: 0.05       # POC; usually $0 on free tier
+  per_tenant_daily_usd: 5.0   # ~1000 requests
+
+fallback_policy:
+  on_rate_limit: switch_to_fallback
+  on_5xx: retry_then_fallback
+  on_timeout_s: 30

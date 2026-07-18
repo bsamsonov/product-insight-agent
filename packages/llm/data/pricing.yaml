@@ -1,0 +1,67 @@
+# Pricing as of 2026-05. Sources: official provider docs.
+# free_tier_rpd = requests per day on free tier (Google AI Studio).
+# Prices in USD per 1M tokens.
+
+providers:
+  gemini:
+    models:
+      gemini-2.5-flash:
+        input_per_1m_usd: 0.075
+        output_per_1m_usd: 0.30
+        free_tier_rpd: 1500
+      gemini-2.5-flash-lite:
+        input_per_1m_usd: 0.01
+        output_per_1m_usd: 0.04
+        free_tier_rpd: 1500
+      gemini-2.5-pro:
+        input_per_1m_usd: 1.25
+        output_per_1m_usd: 10.0
+        free_tier_rpd: 25
+      text-embedding-004:
+        input_per_1m_usd: 0.0
+        output_per_1m_usd: 0.0
+        free_tier_rpd: 1500
+
+  groq:
+    models:
+      llama-3.3-70b-versatile:
+        input_per_1m_usd: 0.59
+        output_per_1m_usd: 0.79
+        free_tier_rpd: 14400
+      llama-4-scout-17b-16e-instruct:
+        input_per_1m_usd: 0.11
+        output_per_1m_usd: 0.34
+        free_tier_rpd: 14400
+      llama-4-maverick-17b-128e-instruct:
+        input_per_1m_usd: 0.50
+        output_per_1m_usd: 0.77
+        free_tier_rpd: 14400
+
+  deepseek:
+    models:
+      deepseek-chat:
+        input_per_1m_usd: 0.27
+        output_per_1m_usd: 1.10
+        cache_hit_per_1m_usd: 0.07
+      deepseek-reasoner:
+        input_per_1m_usd: 0.55
+        output_per_1m_usd: 2.19
+        cache_hit_per_1m_usd: 0.14
+
+  # Local inference — always free
+  ollama:
+    free: true
+    models: {}
+
+  # Local OmniRoute gateway — proxies upstream Anthropic models.
+  # Prices below are CONDITIONAL placeholders modeled on public Claude list prices
+  # (Haiku ≈ $1/$5, Sonnet ≈ $3/$15 per 1M in/out tokens) so cost.usd is non-zero in
+  # traces. Replace with the real upstream tariff when billing data is available.
+  omniroute:
+    models:
+      kr/claude-haiku-4.5:
+        input_per_1m_usd: 1.00
+        output_per_1m_usd: 5.00
+      kr/claude-sonnet-4.5:
+        input_per_1m_usd: 3.00
+        output_per_1m_usd: 15.00

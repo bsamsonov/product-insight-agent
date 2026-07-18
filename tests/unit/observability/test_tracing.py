@@ -1,0 +1,341 @@
+"""Tests for poc.observability.tracing — @traced decorator and record_llm_call."""
+
+from __future__ import annotations
+
+import base64
+import functools
+import json
+
+import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from poc.observability.langfuse_stub import LangfuseTracer, _NoOpContext
+from poc.observability.tracing import _make_langfuse_processor, record_llm_call, traced
+
+# ---------------------------------------------------------------------------
+# Helpers / fixtures
+# ---------------------------------------------------------------------------
+
+
+def _make_provider() -> tuple[TracerProvider, InMemorySpanExporter]:
+    """Return a fresh isolated TracerProvider + InMemorySpanExporter pair."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    # SimpleSpanProcessor exports synchronously — no need to flush in tests.
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return provider, exporter
+
+
+def _traced_with_provider(
+    span_name: str,
+    provider: TracerProvider,
+    attributes: dict | None = None,
+):
+    """Helper: like @traced but injects a specific TracerProvider.
+
+    This avoids touching the global OTel singleton (which can only be set once
+    per process), making tests fully isolated.
+    """
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            tracer = provider.get_tracer("poc")
+            with tracer.start_as_current_span(span_name) as span:
+                if attributes:
+                    for k, v in attributes.items():
+                        span.set_attribute(k, v)
+                return await fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# @traced decorator — integration via _traced_with_provider
+# ---------------------------------------------------------------------------
+
+
+class TestTracedDecorator:
+    async def test_returns_function_result(self):
+        """@traced must not alter the return value of the wrapped function."""
+        provider, _ = _make_provider()
+
+        @_traced_with_provider("test.add", provider)
+        async def add(a: int, b: int) -> int:
+            return a + b
+
+        assert await add(2, 3) == 5
+
+    async def test_span_name_is_set(self):
+        """The span created by the decorator must carry the given name."""
+        provider, exporter = _make_provider()
+
+        @_traced_with_provider("my.operation", provider)
+        async def noop() -> str:
+            return "ok"
+
+        result = await noop()
+        assert result == "ok"
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].name == "my.operation"
+
+    async def test_attributes_are_attached_to_span(self):
+        """Static attributes must appear on the finished span."""
+        provider, exporter = _make_provider()
+
+        @_traced_with_provider(
+            "tagged.op", provider, attributes={"component": "retriever", "version": "2"}
+        )
+        async def fetch() -> None:
+            return None
+
+        await fetch()
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        attrs = spans[0].attributes
+        assert attrs["component"] == "retriever"
+        assert attrs["version"] == "2"
+
+    async def test_no_attributes_does_not_crash(self):
+        """@traced without attributes= must work without error."""
+        provider, exporter = _make_provider()
+
+        @_traced_with_provider("bare.op", provider)
+        async def bare() -> int:
+            return 42
+
+        result = await bare()
+        assert result == 42
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+
+    async def test_preserves_function_metadata(self):
+        """functools.wraps must keep __name__ and __doc__."""
+
+        @traced("meta.op")
+        async def documented_fn() -> None:
+            """My docstring."""
+
+        assert documented_fn.__name__ == "documented_fn"
+        assert documented_fn.__doc__ == "My docstring."
+
+    async def test_propagates_exception(self):
+        """Exceptions raised inside the decorated function must bubble up."""
+        provider, _ = _make_provider()
+
+        @_traced_with_provider("error.op", provider)
+        async def boom() -> None:
+            raise ValueError("kaboom")
+
+        with pytest.raises(ValueError, match="kaboom"):
+            await boom()
+
+    async def test_span_is_finished_after_exception(self):
+        """The span must be closed even when the wrapped function raises."""
+        provider, exporter = _make_provider()
+
+        @_traced_with_provider("error.finished", provider)
+        async def boom() -> None:
+            raise RuntimeError("oops")
+
+        with pytest.raises(RuntimeError):
+            await boom()
+
+        # Span must still be exported (finished), not dangling
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].name == "error.finished"
+
+
+# ---------------------------------------------------------------------------
+# record_llm_call
+# ---------------------------------------------------------------------------
+
+
+class TestRecordLlmCall:
+    async def test_sets_gen_ai_attributes(self):
+        """All mandatory gen_ai.* attributes must be set on the span."""
+        provider, exporter = _make_provider()
+
+        tracer = provider.get_tracer("test")
+        with tracer.start_as_current_span("llm-call") as span:
+            record_llm_call(
+                span,
+                model="claude-sonnet-4-5",
+                input_tokens=100,
+                output_tokens=50,
+                cost_usd=0.002,
+                provider="anthropic",
+            )
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        attrs = spans[0].attributes
+        assert attrs["gen_ai.system"] == "anthropic"
+        assert attrs["gen_ai.request.model"] == "claude-sonnet-4-5"
+        assert attrs["gen_ai.usage.input_tokens"] == 100
+        assert attrs["gen_ai.usage.output_tokens"] == 50
+        # Cost is mapped via Langfuse-native cost_details (JSON), not the ad-hoc cost.usd.
+        cost = json.loads(attrs["langfuse.observation.cost_details"])
+        assert cost == {"total": pytest.approx(0.002)}
+
+    async def test_records_input_and_output(self):
+        """Prompt messages and completion text land on the Langfuse input/output keys."""
+        provider, exporter = _make_provider()
+
+        messages = [{"role": "user", "content": "héllo"}]
+        tracer = provider.get_tracer("test")
+        with tracer.start_as_current_span("llm-call") as span:
+            record_llm_call(
+                span,
+                model="claude-sonnet-4-5",
+                input_tokens=10,
+                output_tokens=5,
+                cost_usd=0.001,
+                provider="anthropic",
+                input_messages=messages,
+                output_text="hi there",
+            )
+
+        attrs = exporter.get_finished_spans()[0].attributes
+        # input is JSON-serialized (OTel attrs cannot hold list[dict]); non-ASCII preserved.
+        assert json.loads(attrs["langfuse.observation.input"]) == messages
+        assert "héllo" in attrs["langfuse.observation.input"]
+        assert attrs["langfuse.observation.output"] == "hi there"
+
+    async def test_input_output_omitted_when_none(self):
+        """Without input_messages/output_text the Langfuse payload keys are not set."""
+        provider, exporter = _make_provider()
+
+        tracer = provider.get_tracer("test")
+        with tracer.start_as_current_span("llm-call") as span:
+            record_llm_call(
+                span,
+                model="gpt-4o",
+                input_tokens=200,
+                output_tokens=80,
+                cost_usd=0.002,
+                provider="openai",
+            )
+
+        attrs = exporter.get_finished_spans()[0].attributes
+        assert "langfuse.observation.input" not in attrs
+        assert "langfuse.observation.output" not in attrs
+
+    async def test_cost_usd_omitted_when_none(self):
+        """When cost_usd=None the cost_details attribute must NOT be set."""
+        provider, exporter = _make_provider()
+
+        tracer = provider.get_tracer("test")
+        with tracer.start_as_current_span("llm-call") as span:
+            record_llm_call(
+                span,
+                model="gpt-4o",
+                input_tokens=200,
+                output_tokens=80,
+                cost_usd=None,
+                provider="openai",
+            )
+
+        spans = exporter.get_finished_spans()
+        attrs = spans[0].attributes
+        assert "langfuse.observation.cost_details" not in attrs
+        assert "cost.usd" not in attrs
+        assert attrs["gen_ai.system"] == "openai"
+
+    async def test_zero_tokens_accepted(self):
+        """Zero token counts are valid (e.g., cached responses)."""
+        provider, exporter = _make_provider()
+
+        tracer = provider.get_tracer("test")
+        with tracer.start_as_current_span("cached-call") as span:
+            record_llm_call(
+                span,
+                model="claude-haiku-4-5",
+                input_tokens=0,
+                output_tokens=0,
+                cost_usd=0.0,
+                provider="anthropic",
+            )
+
+        spans = exporter.get_finished_spans()
+        attrs = spans[0].attributes
+        assert attrs["gen_ai.usage.input_tokens"] == 0
+        assert attrs["gen_ai.usage.output_tokens"] == 0
+        cost = json.loads(attrs["langfuse.observation.cost_details"])
+        assert cost == {"total": pytest.approx(0.0)}
+
+
+# ---------------------------------------------------------------------------
+# LangfuseTracer stub
+# ---------------------------------------------------------------------------
+
+
+class TestLangfuseStub:
+    def test_methods_return_noop(self):
+        tracer = LangfuseTracer()
+        assert isinstance(tracer.trace(name="t"), _NoOpContext)
+        assert isinstance(tracer.span(name="s"), _NoOpContext)
+        assert isinstance(tracer.generation(name="g"), _NoOpContext)
+
+    def test_noop_chaining(self):
+        """Simulate: tracer.trace(...).generation(...).end() — must not raise."""
+        tracer = LangfuseTracer()
+        tracer.trace(name="t").generation(name="g").end()
+
+    def test_noop_context_manager(self):
+        tracer = LangfuseTracer()
+        with tracer.span(name="s") as s:
+            assert s is not None
+
+    def test_flush_and_shutdown_do_not_raise(self):
+        tracer = LangfuseTracer()
+        tracer.flush()
+        tracer.shutdown()
+
+    def test_noop_getattr_returns_noop(self):
+        """Arbitrary attribute access on _NoOpContext must return another _NoOpContext."""
+        ctx = _NoOpContext()
+        result = ctx.anything.chained.deeply
+        assert isinstance(result, _NoOpContext)
+
+
+# ---------------------------------------------------------------------------
+# Langfuse OTLP exporter wiring (S3.T6)
+# ---------------------------------------------------------------------------
+
+
+class TestLangfuseProcessor:
+    def test_returns_none_without_host(self, monkeypatch):
+        """No LANGFUSE_HOST → no OTLP export (app runs without errors)."""
+        monkeypatch.delenv("LANGFUSE_HOST", raising=False)
+        assert _make_langfuse_processor() is None
+
+    def test_registers_otlp_processor_with_host(self, monkeypatch):
+        """LANGFUSE_HOST set → a BatchSpanProcessor shipping to the Langfuse OTLP endpoint."""
+        monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3000")
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "lf-pub-x")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "lf-sk-y")
+
+        processor = _make_langfuse_processor()
+
+        assert isinstance(processor, BatchSpanProcessor)
+        exporter = processor.span_exporter
+        assert exporter._endpoint == "http://localhost:3000/api/public/otel/v1/traces"
+        # Basic auth header is base64(public:secret).
+        expected = base64.b64encode(b"lf-pub-x:lf-sk-y").decode()
+        assert exporter._headers["Authorization"] == f"Basic {expected}"
+
+    def test_strips_trailing_slash_from_host(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3000/")
+        processor = _make_langfuse_processor()
+        assert processor.span_exporter._endpoint == (
+            "http://localhost:3000/api/public/otel/v1/traces"
+        )

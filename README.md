@@ -82,8 +82,8 @@ graph TD
     RET --- QDRANT[(Qdrant\nvector store)]
     RET --- BM25[(BM25\nin-memory)]
 
-    AGT --> ROUTER[Model Router\nHaiku / Sonnet / Opus]
-    ROUTER --> LLM[OmniRoute LLM Proxy]
+    AGT --> ROUTER[Model Router\nrole-based, per router.yaml]
+    ROUTER --> LLM[OpenAI-compatible Provider\nGemini / Groq / DeepSeek / self-hosted]
 
     AUDIT[Audit Logger\nJSONL append-only] --> AGT
     OBS[OTel Tracing] --> AGT
@@ -142,12 +142,18 @@ uv run python apps/api/src/api/main.py
 
 ## Environment variables
 
+See [`.env.example`](.env.example) for the full list. Minimum required:
+
 ```
-POC_OMNIROUTE_API_KEY=<key>
-POC_OMNIROUTE_BASE_URL=http://localhost:20128/v1
+POC_GEMINI_API_KEY=<key>   # free tier — https://aistudio.google.com/apikey
 LOG_LEVEL=INFO
 ENV=dev
 ```
+
+The default LLM provider is resolved from `POC_DEFAULT_PROVIDER` (falls back to
+`gemini`); the router works with any OpenAI-compatible endpoint, including
+self-hosted gateways — see
+[docs/adr/0008-multi-provider-llm-strategy.md](docs/adr/0008-multi-provider-llm-strategy.md).
 
 ## Structure
 

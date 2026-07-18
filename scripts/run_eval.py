@@ -1,0 +1,395 @@
+"""CLI to run baseline RAG evaluation against the golden set."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from datetime import UTC, datetime
+from pathlib import Path
+
+import typer
+
+app = typer.Typer(help="Run baseline RAG evaluation.")
+_log = logging.getLogger(__name__)
+
+_SCRIPTS_DIR = Path(__file__).parent
+_PROJECT_ROOT = _SCRIPTS_DIR.parent
+_DEFAULT_EVAL_SET = _PROJECT_ROOT / "packages" / "evals" / "data" / "golden_set_v2_short.jsonl"
+_DEFAULT_DOCS_EVALS = _PROJECT_ROOT / "docs" / "evals"
+
+_NON_LLM_METRICS = {"citation_precision", "groundedness_heuristic"}
+_LLM_METRICS = {"faithfulness", "answer_relevance", "context_precision", "context_recall"}
+_ALL_METRICS = _NON_LLM_METRICS | _LLM_METRICS
+
+
+@app.command()
+def main(
+    eval_set: Path = typer.Option(  # noqa: B008
+        _DEFAULT_EVAL_SET,
+        "--golden-set",
+        help="Path to golden set JSONL",
+    ),
+    qdrant_url: str = typer.Option("http://localhost:6333", help="Qdrant URL"),
+    tenant: str = typer.Option("default", help="Tenant name"),
+    provider: str = typer.Option("omniroute", help="LLM provider name"),
+    model: str = typer.Option("kr/claude-haiku-4.5", help="Model name"),
+    output: Path | None = typer.Option(None, "--output", help="Output JSON report path"),  # noqa: B008
+    baseline: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--baseline",
+        help="Previous run JSON to compare against",
+    ),
+    limit: int | None = typer.Option(None, help="Max eval cases to run"),
+    judge: bool = typer.Option(True, help="Run faithfulness LLM judge (legacy flag)"),
+    use_agent: bool = typer.Option(
+        False,
+        "--agent/--no-agent",
+        help=(
+            "Use full LangGraph agent (intent→plan→retrieve→cluster→summarize→judge) "
+            "instead of RAGPipeline baseline"
+        ),
+    ),
+    metrics: str = typer.Option(
+        "citation_precision,groundedness_heuristic",
+        "--metrics",
+        help=(
+            "Comma-separated metrics to compute. "
+            "Non-LLM: citation_precision,groundedness_heuristic. "
+            "LLM-based: faithfulness,answer_relevance,context_precision,context_recall."
+        ),
+    ),
+) -> None:
+    logging.basicConfig(level=logging.WARNING)
+
+    # Resolve short name to full path (e.g. "golden_set_v0" → .../data/golden_set_v0.jsonl)
+    if not eval_set.exists() and not eval_set.suffix:
+        eval_set = _PROJECT_ROOT / "packages" / "evals" / "data" / f"{eval_set.name}.jsonl"
+
+    # Resolve output path
+    resolved_output = output
+    if resolved_output is None:
+        _DEFAULT_DOCS_EVALS.mkdir(parents=True, exist_ok=True)
+        date_str = datetime.now(UTC).strftime("%Y%m%d")
+        set_name = eval_set.stem  # e.g. "golden_set_v1"
+        resolved_output = _DEFAULT_DOCS_EVALS / f"{date_str}_{set_name}.json"
+
+    asyncio.run(
+        _run_eval(
+            eval_set=eval_set,
+            qdrant_url=qdrant_url,
+            tenant=tenant,
+            provider=provider,
+            model=model,
+            output=resolved_output,
+            baseline=baseline,
+            limit=limit,
+            run_judge=judge,
+            use_agent=use_agent,
+            metric_names=[m.strip() for m in metrics.split(",") if m.strip()],
+        )
+    )
+
+
+async def _run_eval(
+    *,
+    eval_set: Path,
+    qdrant_url: str,
+    tenant: str,
+    provider: str,
+    model: str,
+    output: Path,
+    baseline: Path | None,
+    limit: int | None,
+    run_judge: bool,
+    use_agent: bool,
+    metric_names: list[str],
+) -> None:
+    from poc.core.models import Question
+    from poc.evals.metrics import (
+        answer_relevance,
+        citation_precision,
+        faithfulness,
+        groundedness_heuristic,
+    )
+    from poc.evals.metrics import (
+        context_precision as ctx_precision,
+    )
+    from poc.evals.metrics import (
+        context_recall as ctx_recall,
+    )
+    from poc.evals.runner import EvalResult, _check_substrings, load_eval_cases
+    from poc.ingestion.chunker import RecursiveTokenChunker
+    from poc.ingestion.normalizer import normalize
+    from poc.ingestion.sources.jsonl import JsonlSource
+    from poc.llm.openai_compatible import OpenAICompatibleProvider
+    from poc.observability.tracing import configure as configure_tracing
+    from poc.retrieval.bm25 import BM25Index
+    from poc.retrieval.hybrid import HybridRetriever
+    from poc.retrieval.qdrant_index import QdrantIndex
+    from poc.retrieval.reranker import CrossEncoderReranker, NoOpReranker
+
+    # Validate metric names
+    unknown = set(metric_names) - _ALL_METRICS
+    if unknown:
+        typer.echo(f"WARNING: unknown metrics (will skip): {unknown}", err=True)
+        metric_names = [m for m in metric_names if m in _ALL_METRICS]
+
+    active_llm_metrics = set(metric_names) & _LLM_METRICS
+
+    # Initialise OpenTelemetry -> Langfuse export. The API app calls this at startup,
+    # but this CLI does not go through it, so without this the get_tracer()/span calls
+    # in the LLM and agent layers use the global no-op provider and export nothing.
+    configure_tracing(service_name="run-eval")
+
+    typer.echo("Loading LLM provider...")
+    llm = OpenAICompatibleProvider.from_env(provider)
+
+    typer.echo("Loading eval cases...")
+    cases = load_eval_cases(eval_set)
+    if limit:
+        cases = cases[:limit]
+    typer.echo(f"Running {len(cases)} eval cases with metrics: {metric_names}")
+
+    bm25 = BM25Index()
+    data_dir = _PROJECT_ROOT / "data" / "raw"
+    reviews_path = data_dir / "reviews.jsonl"
+
+    if reviews_path.exists():
+        typer.echo("Loading documents into BM25 index...")
+        chunker = RecursiveTokenChunker()
+        all_chunks = []
+        for i, raw_doc in enumerate(JsonlSource(reviews_path).iter()):
+            if i >= 2000:
+                break
+            doc = normalize(raw_doc)
+            all_chunks.extend(chunker.chunk(doc))
+        bm25.build(all_chunks)
+        typer.echo(f"BM25 index: {len(bm25)} chunks")
+    else:
+        typer.echo("No reviews.jsonl found, eval will have no context.")
+
+    try:
+        from poc.retrieval.bge_embedder import BgeM3Embedder
+
+        embedder = BgeM3Embedder()
+        qdrant_index = QdrantIndex(embedder=embedder, qdrant_url=qdrant_url, tenant=tenant)
+        typer.echo("Qdrant connected.")
+    except Exception as e:
+        typer.echo(f"Qdrant unavailable ({e}), using BM25-only retrieval.")
+
+        class _NoOpQdrant:
+            def search(self, *args, **kwargs):
+                return []
+
+        qdrant_index = _NoOpQdrant()
+
+    try:
+        reranker = CrossEncoderReranker()
+        typer.echo("CrossEncoderReranker loaded.")
+    except Exception as e:
+        typer.echo(f"CrossEncoderReranker unavailable ({e}), falling back to NoOpReranker.")
+        reranker = NoOpReranker()
+    retriever = HybridRetriever(
+        qdrant_index=qdrant_index,
+        bm25_index=bm25,
+        reranker=reranker,
+    )
+
+    if use_agent:
+        from poc.agent.agent import ProductInsightAgent
+
+        pipeline = ProductInsightAgent(llm=llm, retriever=retriever)
+        typer.echo("Pipeline: ProductInsightAgent (LangGraph)")
+    else:
+        from poc.agent.rag_pipeline import RAGPipeline
+
+        pipeline = RAGPipeline(retriever=retriever, llm=llm, model=model, top_k=8)
+        typer.echo("Pipeline: RAGPipeline (baseline)")
+
+    results: list[EvalResult] = []
+    # Per-metric accumulators: metric_name -> list[float]
+    metric_accumulator: dict[str, list[float]] = {m: [] for m in metric_names}
+    substring_matches: list[bool] = []
+
+    for i, case in enumerate(cases):
+        typer.echo(f"[{i + 1}/{len(cases)}] {case.id}: {case.question[:60]}...")
+        try:
+            if use_agent:
+                answer = await pipeline.get_answer(
+                    case.question, tenant=tenant, filters=case.filters or None
+                )
+            else:
+                q = Question(text=case.question, filters=case.filters)
+                answer = await pipeline.answer(q)
+            cited_ids = [c.chunk_id for c in answer.citations]
+
+            context_texts: list[str] = []
+            if bm25._chunks and active_llm_metrics:
+                context_texts = [sc.chunk.text for sc in retriever.retrieve(case.question, top_k=5)]
+
+            # Compute requested metrics
+            case_scores: dict[str, float] = {}
+
+            if "citation_precision" in metric_names:
+                cp = citation_precision(cited_ids, case.expected_chunk_ids)
+                case_scores["citation_precision"] = cp.score
+
+            if "groundedness_heuristic" in metric_names:
+                gh = groundedness_heuristic(answer.text, context_texts)
+                case_scores["groundedness_heuristic"] = gh.score
+
+            if "faithfulness" in metric_names and (run_judge or "faithfulness" in metric_names):
+                if context_texts:
+                    faith = await faithfulness(answer.text, context_texts, llm, model=model)
+                    case_scores["faithfulness"] = faith.score
+                else:
+                    case_scores["faithfulness"] = 0.0
+
+            if "answer_relevance" in metric_names:
+                ar = await answer_relevance(case.question, answer.text, llm, model=model)
+                case_scores["answer_relevance"] = ar.score
+
+            if "context_precision" in metric_names:
+                if context_texts:
+                    cp_llm = await ctx_precision(case.question, context_texts, llm, model=model)
+                    case_scores["context_precision"] = cp_llm.score
+                else:
+                    case_scores["context_precision"] = 1.0
+
+            if "context_recall" in metric_names:
+                expected_answer = " ".join(case.expected_answer_substrings)
+                if context_texts and expected_answer:
+                    cr = await ctx_recall(
+                        answer.text, expected_answer, context_texts, llm, model=model
+                    )
+                    case_scores["context_recall"] = cr.score
+                else:
+                    case_scores["context_recall"] = 1.0 if not expected_answer else 0.0
+
+            substr_match = _check_substrings(answer.text, case.expected_answer_substrings)
+
+            # Legacy EvalResult for backward compat
+            result = EvalResult(
+                case_id=case.id,
+                question=case.question,
+                answer_text=answer.text,
+                cited_chunk_ids=cited_ids,
+                faithfulness_score=case_scores.get("faithfulness", 0.0),
+                citation_precision_score=case_scores.get("citation_precision", 0.0),
+                substring_match=substr_match,
+                latency_ms=answer.latency_ms,
+                cost_usd=answer.cost_usd,
+            )
+            # Attach extended scores for output
+            result._scores = case_scores  # type: ignore[attr-defined]
+            result._retrieved_count = len(context_texts)  # type: ignore[attr-defined]
+
+        except Exception as exc:
+            _log.exception("Error on case %s", case.id)
+            result = EvalResult(
+                case_id=case.id,
+                question=case.question,
+                answer_text="",
+                cited_chunk_ids=[],
+                faithfulness_score=0.0,
+                citation_precision_score=0.0,
+                substring_match=False,
+                latency_ms=0,
+                error=str(exc),
+            )
+            result._scores = {}  # type: ignore[attr-defined]
+            result._retrieved_count = 0  # type: ignore[attr-defined]
+
+        results.append(result)
+        substring_matches.append(result.substring_match)
+        for m_name in metric_names:
+            score_val = getattr(result, "_scores", {}).get(m_name)
+            if score_val is not None:
+                metric_accumulator[m_name].append(score_val)
+
+    # Summary stats
+    n = len(results)
+    errors = sum(1 for r in results if r.error)
+    substr_rate = sum(1 for m in substring_matches if m) / n if n else 0.0
+
+    metrics_summary: dict[str, dict[str, float]] = {}
+    for m_name, scores in metric_accumulator.items():
+        if scores:
+            metrics_summary[m_name] = {
+                "mean": round(sum(scores) / len(scores), 4),
+                "min": round(min(scores), 4),
+                "max": round(max(scores), 4),
+            }
+
+    per_case = [
+        {
+            "id": r.case_id,
+            "question": r.question,
+            "scores": getattr(r, "_scores", {}),
+            "retrieved_count": getattr(r, "_retrieved_count", 0),
+            "substring_match": r.substring_match,
+            "latency_ms": r.latency_ms,
+            "error": r.error,
+        }
+        for r in results
+    ]
+
+    timestamp = datetime.now(UTC).isoformat()
+    golden_set_name = eval_set.stem
+
+    report = {
+        "timestamp": timestamp,
+        "golden_set": golden_set_name,
+        "pipeline": "agent" if use_agent else "baseline",
+        "metrics_summary": metrics_summary,
+        "summary": {
+            "total_cases": n,
+            "errors": errors,
+            "substring_match_rate": round(substr_rate, 4),
+        },
+        "per_case": per_case,
+    }
+
+    typer.echo("\n=== Eval Report ===")
+    typer.echo(f"Total cases:         {n}")
+    typer.echo(f"Errors:              {errors}")
+    typer.echo(f"Substring match:     {substr_rate:.4f}")
+    for m_name, stats in metrics_summary.items():
+        typer.echo(
+            f"{m_name}: mean={stats['mean']:.4f} min={stats['min']:.4f} max={stats['max']:.4f}"
+        )
+
+    # Baseline comparison
+    if baseline and baseline.exists():
+        typer.echo("\n=== Baseline Comparison ===")
+        try:
+            prev = json.loads(baseline.read_text(encoding="utf-8"))
+            prev_summary = prev.get("metrics_summary", {})
+            for m_name, stats in metrics_summary.items():
+                if m_name in prev_summary:
+                    delta = stats["mean"] - prev_summary[m_name]["mean"]
+                    sign = "+" if delta >= 0 else ""
+                    typer.echo(f"{m_name}: {sign}{delta:+.4f} vs baseline")
+            report["baseline"] = str(baseline)
+            report["baseline_deltas"] = {
+                m: round(metrics_summary[m]["mean"] - prev_summary[m]["mean"], 4)
+                for m in metrics_summary
+                if m in prev_summary
+            }
+        except Exception as exc:
+            typer.echo(f"Could not load baseline: {exc}", err=True)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    typer.echo(f"\nReport saved to: {output}")
+
+    # Flush buffered spans before the process exits. BatchSpanProcessor sends in
+    # batches; a short-lived CLI can terminate before the last batch is shipped.
+    from opentelemetry import trace
+
+    trace.get_tracer_provider().force_flush()
+
+
+if __name__ == "__main__":
+    app()

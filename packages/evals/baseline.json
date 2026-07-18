@@ -1,0 +1,7 @@
+{
+  "metrics_summary": {
+    "citation_precision": {"mean": 0.70, "min": 0.0, "max": 1.0},
+    "groundedness_heuristic": {"mean": 0.50, "min": 0.0, "max": 1.0}
+  },
+  "note": "Initial baseline — set from Sprint 6 target metrics. Update via: python scripts/eval_diff.py ..."
+}

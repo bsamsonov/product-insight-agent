@@ -6,7 +6,7 @@ import sys
 import typer
 from poc.llm.openai_compatible import OpenAICompatibleProvider
 from poc.llm.provider import LLMMessage
-from poc.llm.registry import REGISTRY
+from poc.llm.registry import default_model_for
 from poc.llm.settings import LLMSettings
 
 app = typer.Typer(add_completion=False)
@@ -17,21 +17,18 @@ def ask(
     question: str = typer.Argument(..., help="Question to ask the LLM"),
     provider: str | None = typer.Option(
         None,
-        help="LLM provider: omniroute|gemini|groq|deepseek|ollama (default: POC_DEFAULT_PROVIDER)",
+        help="LLM provider: gemini|groq|deepseek|ollama|omniroute (default: POC_DEFAULT_PROVIDER)",
     ),
-    model: str | None = typer.Option(None, help="Model name (default: POC_DEFAULT_MODEL)"),
+    model: str | None = typer.Option(
+        None, help="Model name (default: the resolved provider's default model)"
+    ),
     max_tokens: int = typer.Option(1024, help="Maximum tokens in response"),
     stream: bool = typer.Option(False, "--stream", "-s", help="Stream response token by token"),
 ) -> None:
     """Ask a question using the configured LLM provider."""
     settings = LLMSettings()
     resolved_provider = provider or settings.default_provider
-    config = REGISTRY.get(resolved_provider)
-    resolved_model = (
-        model
-        or settings.default_model
-        or (config.default_model if config else "kr/claude-haiku-4.5")
-    )
+    resolved_model = model or default_model_for(resolved_provider)
 
     llm = OpenAICompatibleProvider.from_env(resolved_provider)
     messages = [LLMMessage(role="user", content=question)]

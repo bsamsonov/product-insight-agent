@@ -53,15 +53,9 @@ providers:
     free: true
     models: {}
 
-  # Local OmniRoute gateway — proxies upstream Anthropic models.
-  # Prices below are CONDITIONAL placeholders modeled on public Claude list prices
-  # (Haiku ≈ $1/$5, Sonnet ≈ $3/$15 per 1M in/out tokens) so cost.usd is non-zero in
-  # traces. Replace with the real upstream tariff when billing data is available.
+  # Optional: any OpenAI-compatible gateway (LiteLLM, OpenRouter, OmniRoute, ...).
+  # No fixed model list — the gateway proxies whatever upstream models you configure.
+  # Add pricing entries here (model name → input/output $ per 1M tokens) matching the
+  # models your gateway exposes so cost.usd is populated in traces.
   omniroute:
-    models:
-      kr/claude-haiku-4.5:
-        input_per_1m_usd: 1.00
-        output_per_1m_usd: 5.00
-      kr/claude-sonnet-4.5:
-        input_per_1m_usd: 3.00
-        output_per_1m_usd: 15.00
+    models: {}

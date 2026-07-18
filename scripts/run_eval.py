@@ -32,8 +32,12 @@ def main(
     ),
     qdrant_url: str = typer.Option("http://localhost:6333", help="Qdrant URL"),
     tenant: str = typer.Option("default", help="Tenant name"),
-    provider: str = typer.Option("omniroute", help="LLM provider name"),
-    model: str = typer.Option("kr/claude-haiku-4.5", help="Model name"),
+    provider: str | None = typer.Option(
+        None, help="LLM provider name (default: POC_DEFAULT_PROVIDER, falls back to gemini)"
+    ),
+    model: str | None = typer.Option(
+        None, help="Model name (default: the resolved provider's default model)"
+    ),
     output: Path | None = typer.Option(None, "--output", help="Output JSON report path"),  # noqa: B008
     baseline: Path | None = typer.Option(  # noqa: B008
         None,
@@ -74,13 +78,21 @@ def main(
         set_name = eval_set.stem  # e.g. "golden_set_v1"
         resolved_output = _DEFAULT_DOCS_EVALS / f"{date_str}_{set_name}.json"
 
+    # Resolve provider/model: single source of default is LLMSettings.default_provider
+    # (env POC_DEFAULT_PROVIDER, fallback "gemini") + that provider's registered model.
+    from poc.llm.registry import default_model_for
+    from poc.llm.settings import LLMSettings
+
+    resolved_provider = provider or LLMSettings().default_provider
+    resolved_model = model or default_model_for(resolved_provider)
+
     asyncio.run(
         _run_eval(
             eval_set=eval_set,
             qdrant_url=qdrant_url,
             tenant=tenant,
-            provider=provider,
-            model=model,
+            provider=resolved_provider,
+            model=resolved_model,
             output=resolved_output,
             baseline=baseline,
             limit=limit,

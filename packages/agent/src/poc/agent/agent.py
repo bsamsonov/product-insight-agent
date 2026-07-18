@@ -22,9 +22,9 @@ class ProductInsightAgent:
         llm: LLMProvider,
         retriever: HybridRetriever,
         # model routing: fast for classification/planning, smart for synthesis & judge
-        fast_model: str = "kr/claude-haiku-4.5",
-        smart_model: str = "kr/claude-sonnet-4.5",
-        judge_model: str = "kr/claude-sonnet-4.5",
+        fast_model: str | None = None,
+        smart_model: str | None = None,
+        judge_model: str | None = None,
         enable_hitl: bool = False,
     ) -> None:
         """
@@ -41,17 +41,25 @@ class ProductInsightAgent:
         :type retriever: HybridRetriever
 
         :param fast_model: The model used for intent, plan, and cluster tasks. Defaults
-            to "kr/claude-haiku-4.5".
-        :type fast_model: str
+            to the resolved default provider's model (see
+            :func:`poc.llm.registry.default_model_for`) when not given.
+        :type fast_model: str | None
 
-        :param smart_model: The model used for summarization. Defaults
-            to "kr/claude-sonnet-4.5".
-        :type smart_model: str
+        :param smart_model: The model used for summarization. Defaults to the resolved
+            default provider's model when not given.
+        :type smart_model: str | None
 
-        :param judge_model: The model used for faithfulness evaluation. Defaults
-            to "kr/claude-sonnet-4.5" — judge gates HITL, so reliability matters most here.
-        :type judge_model: str
+        :param judge_model: The model used for faithfulness evaluation. Defaults to the
+            resolved default provider's model when not given — judge gates HITL, so
+            reliability matters most here; pass an explicit stronger model if needed.
+        :type judge_model: str | None
         """
+        from poc.llm.registry import default_model_for
+
+        fast_model = fast_model or default_model_for()
+        smart_model = smart_model or default_model_for()
+        judge_model = judge_model or default_model_for()
+
         self._enable_hitl = enable_hitl
         self._graph = build_graph(
             llm=llm,

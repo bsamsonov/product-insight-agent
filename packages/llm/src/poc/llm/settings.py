@@ -25,10 +25,12 @@ class LLMSettings(BaseSettings):
     ollama_api_key: str = "ollama"
     ollama_base_url: str | None = None
 
-    # local OmniRoute gateway
+    # Optional: any OpenAI-compatible gateway (LiteLLM, OpenRouter, OmniRoute, ...)
     omniroute_api_key: str = ""
     omniroute_base_url: str | None = None
 
-    # default provider/model used when from_env() is called without arguments
-    default_provider: str = "omniroute"
-    default_model: str = "kr/claude-haiku-4.5"
+    # Default provider used when from_env() is called without arguments. This is the
+    # single source of truth for "which provider if none is specified" — resolved from
+    # env var POC_DEFAULT_PROVIDER, falling back to "gemini" (matches the README
+    # quickstart, which only requires a free-tier POC_GEMINI_API_KEY).
+    default_provider: str = "gemini"

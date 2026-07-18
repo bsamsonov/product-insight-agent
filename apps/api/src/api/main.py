@@ -109,9 +109,10 @@ async def lifespan(app: FastAPI):
     # exported to Langfuse over OTLP; with OTEL_CONSOLE_EXPORT=true they print to the
     # console; otherwise they are recorded but not exported (see S3.T6).
     configure_tracing(service_name="product-insight-agent")
-    LLMSettings()
-    provider = get_provider("omniroute")
+    settings = LLMSettings()
+    provider = get_provider(settings.default_provider)
     _state["provider"] = provider
+    _state["provider_name"] = settings.default_provider
     _state["agent"] = _build_agent(provider)
     _state["audit"] = await _build_audit()
     yield
@@ -256,7 +257,7 @@ async def ask(
             LLMMessage(role="user", content=sanitized_q),
         ]
 
-        model = req.model or REGISTRY["omniroute"].default_model
+        model = req.model or REGISTRY[_state["provider_name"]].default_model
 
         tracer = get_tracer()
         with tracer.start_as_current_span("agent.run") as span:

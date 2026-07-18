@@ -19,6 +19,11 @@ class LLMResponse(BaseModel):
     cost_usd: float | None
     latency_ms: int
     finish_reason: str
+    # Provider-side prompt-cache hits (S3.T3): number of input tokens served from the
+    # provider's prompt cache. Populated from `usage.prompt_tokens_details.cached_tokens`
+    # (OpenAI-compatible / Gemini implicit cache) or `usage.prompt_cache_hit_tokens`
+    # (DeepSeek automatic context cache). 0 when the provider reports no cache activity.
+    cached_input_tokens: int = 0
 
 
 class LLMProvider(Protocol):

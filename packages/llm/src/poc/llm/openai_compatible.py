@@ -105,6 +105,7 @@ class OpenAICompatibleProvider:
             usage = resp.usage
             in_tok = usage.prompt_tokens if usage else 0
             out_tok = usage.completion_tokens if usage else 0
+            cached_tok = self._extract_cached_tokens(usage)
             cost_usd = estimate_cost(self._provider_name, model, in_tok, out_tok)
 
             record_llm_call(
@@ -126,6 +127,7 @@ class OpenAICompatibleProvider:
                 cost_usd=cost_usd,
                 latency_ms=latency_ms,
                 finish_reason=choice.finish_reason or "stop",
+                cached_input_tokens=cached_tok,
             )
 
     async def stream(
@@ -153,6 +155,25 @@ class OpenAICompatibleProvider:
         return _gen()
 
     # ------------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _extract_cached_tokens(usage: Any) -> int:
+        """Extract provider-side prompt-cache hit tokens from a usage object (S3.T3).
+
+        Providers report cache hits in different fields:
+        - OpenAI-compatible (incl. Gemini implicit cache via the OpenAI endpoint):
+          ``usage.prompt_tokens_details.cached_tokens``
+        - DeepSeek automatic context cache: ``usage.prompt_cache_hit_tokens``
+
+        Uses getattr so absent fields (older providers, Ollama) safely yield 0.
+        """
+        if usage is None:
+            return 0
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = getattr(details, "cached_tokens", None) if details is not None else None
+        if cached is None:
+            cached = getattr(usage, "prompt_cache_hit_tokens", None)
+        return int(cached or 0)
 
     def _apply_response_format(
         self, kwargs: dict[str, Any], response_format: type[BaseModel]

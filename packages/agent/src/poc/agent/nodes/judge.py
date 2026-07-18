@@ -5,6 +5,7 @@ import re
 
 from poc.agent.state import AgentState
 from poc.core.models import Answer, Citation
+from poc.llm.budget import BudgetExceededError
 from poc.llm.provider import LLMMessage, LLMProvider
 from pydantic import BaseModel
 
@@ -13,6 +14,7 @@ _log = logging.getLogger(__name__)
 _CITATION_RE = re.compile(r"\[([^\]]+)\]")
 
 _JUDGE_THRESHOLD = 0.6  # below this → needs human review
+_ESCALATE_THRESHOLD = 0.5  # below this → re-judge once with the stronger escalate model
 
 
 class JudgeResult(BaseModel):
@@ -40,8 +42,20 @@ def _extract_citations(text: str, retrieved: list[dict]) -> list[Citation]:
     return citations
 
 
-def make_judge_node(llm: LLMProvider, model: str):
-    """Factory: LLM-as-judge evaluates the draft answer."""
+def make_judge_node(
+    llm: LLMProvider,
+    model: str,
+    *,
+    escalate_llm: LLMProvider | None = None,
+):
+    """Factory: LLM-as-judge evaluates the draft answer.
+
+    When *escalate_llm* is provided (S3.T2: a RoleScopedLLM bound to the
+    ``escalate`` route) and the first judgement scores below
+    ``_ESCALATE_THRESHOLD``, the evaluation is re-run once through the stronger
+    model and its verdict replaces the first one. Low confidence from a cheap
+    judge is a signal to spend more, not to fail the answer outright.
+    """
 
     async def judge_node(state: AgentState) -> dict:
         draft = state.get("draft", "")
@@ -71,12 +85,14 @@ def make_judge_node(llm: LLMProvider, model: str):
             "Evaluation (JSON):"
         )
 
+        messages = [
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=user_prompt),
+        ]
+
         try:
             response = await llm.complete(
-                [
-                    LLMMessage(role="system", content=system_prompt),
-                    LLMMessage(role="user", content=user_prompt),
-                ],
+                messages,
                 model=model,
                 max_tokens=256,
                 temperature=0.0,
@@ -85,10 +101,33 @@ def make_judge_node(llm: LLMProvider, model: str):
             result = JudgeResult.model_validate_json(response.content)
             judgement = result.model_dump()
             cost = response.cost_usd or 0.0
+        except BudgetExceededError:
+            raise  # hard-stop must reach the API layer (S3.T4), never swallowed
         except Exception as exc:
             _log.warning("Judge node failed: %s", exc)
             judgement = {"score": 0.5, "passed": True, "reasoning": "judge unavailable"}
             cost = 0.0
+
+        # S3.T2: low-confidence verdict from the cheap judge → one re-run through the
+        # stronger escalate route. Escalation failure is fail-soft (keep first verdict);
+        # budget breaches still propagate.
+        escalated = False
+        if judgement.get("score", 1.0) < _ESCALATE_THRESHOLD and escalate_llm is not None:
+            try:
+                response2 = await escalate_llm.complete(
+                    messages,
+                    model=model,  # RoleScopedLLM resolves the real model from router.yaml
+                    max_tokens=256,
+                    temperature=0.0,
+                    response_format=JudgeResult,
+                )
+                judgement = JudgeResult.model_validate_json(response2.content).model_dump()
+                cost += response2.cost_usd or 0.0
+                escalated = True
+            except BudgetExceededError:
+                raise
+            except Exception as exc:
+                _log.warning("Judge escalation failed, keeping first verdict: %s", exc)
 
         needs_review = judgement.get("score", 1.0) < _JUDGE_THRESHOLD
 
@@ -109,6 +148,7 @@ def make_judge_node(llm: LLMProvider, model: str):
                 "node": "judge",
                 "score": judgement.get("score"),
                 "passed": judgement.get("passed"),
+                "escalated": escalated,
             }
         )
 

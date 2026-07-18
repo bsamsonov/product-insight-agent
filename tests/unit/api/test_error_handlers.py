@@ -154,6 +154,30 @@ def test_llm_error_429():
     assert resp.status_code == 429
 
 
+def test_budget_exceeded_429():
+    """BudgetExceededError (S3.T4 hard-stop) maps to 429 with budget_exceeded type,
+    despite being a DomainError subclass (which would otherwise map to 400)."""
+    from api.error_handlers import register_error_handlers
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from poc.llm.budget import BudgetExceededError
+
+    test_app = FastAPI()
+    register_error_handlers(test_app)
+
+    @test_app.get("/over-budget")
+    async def over_budget():
+        raise BudgetExceededError("Per-request budget exceeded: $0.0100 > $0.0010")
+
+    with TestClient(test_app, raise_server_exceptions=False) as tc:
+        resp = tc.get("/over-budget")
+    assert resp.status_code == 429
+    body = resp.json()
+    assert body["status"] == "error"
+    assert body["type"] == "budget_exceeded"
+    assert "Per-request" in body["message"]
+
+
 def test_generic_500_handler():
     """Unhandled Exception returns 500 with opaque message."""
     from api.error_handlers import register_error_handlers

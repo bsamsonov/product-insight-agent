@@ -6,6 +6,7 @@ from typing import Any
 from poc.agent.graph import build_graph, initial_state
 from poc.agent.state import AgentState
 from poc.core.models import Answer
+from poc.llm.context import request_budget
 from poc.llm.provider import LLMProvider
 from poc.observability.tracing import get_tracer
 from poc.retrieval.hybrid import HybridRetriever
@@ -26,6 +27,7 @@ class ProductInsightAgent:
         smart_model: str | None = None,
         judge_model: str | None = None,
         enable_hitl: bool = False,
+        router: Any | None = None,
     ) -> None:
         """
         Initializes the instance with the provided language model, retrieval method, and
@@ -53,6 +55,11 @@ class ProductInsightAgent:
             resolved default provider's model when not given — judge gates HITL, so
             reliability matters most here; pass an explicit stronger model if needed.
         :type judge_model: str | None
+
+        :param router: Optional :class:`~poc.llm.router.RoutedLLM`. When given, all
+            graph nodes route through it per role (S3.T2) — with fallback, response
+            cache, and budget caps — and the ``*_model`` arguments are ignored.
+        :type router: RoutedLLM | None
         """
         from poc.llm.registry import default_model_for
 
@@ -69,6 +76,7 @@ class ProductInsightAgent:
             summarize_model=smart_model,
             judge_model=judge_model,
             enable_hitl=enable_hitl,
+            router=router,
         )
 
     async def run(
@@ -91,10 +99,14 @@ class ProductInsightAgent:
         # Root span: makes every node span (agent.intent…judge) a child of one trace
         # instead of N detached traces. Langfuse then renders a single request tree.
         tracer = get_tracer()
-        with tracer.start_as_current_span("agent.run") as span:
+        # request_budget opens the request-scoped cost context (contextvars, S3.T4):
+        # RoutedLLM charges every call against it, giving per-request budget caps
+        # and an authoritative per-request cost total.
+        with tracer.start_as_current_span("agent.run") as span, request_budget(tenant) as budget:
             span.set_attribute("tenant", tenant)
             result: AgentState = await self._graph.ainvoke(state, config=config)
             span.set_attribute("intent", result.get("intent", ""))
+            span.set_attribute("cost.request_total_usd", budget.total_usd)
             return result
 
     async def resume_review(self, thread_id: str, *, approved: bool) -> AgentState:

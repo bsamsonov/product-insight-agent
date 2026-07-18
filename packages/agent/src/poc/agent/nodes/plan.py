@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from poc.agent.state import AgentState
+from poc.llm.budget import BudgetExceededError
 from poc.llm.provider import LLMMessage, LLMProvider
 from pydantic import BaseModel
 
@@ -85,6 +86,8 @@ def make_plan_node(llm: LLMProvider, model: str):
             # Merge with existing filters from the question
             plan["filters"].update({k: v for k, v in state.get("filters", {}).items() if v})
             cost = response.cost_usd or 0.0
+        except BudgetExceededError:
+            raise  # hard-stop must reach the API layer (S3.T4)
         except Exception as exc:
             _log.warning("Plan generation failed: %s", exc)
             plan = {

@@ -4,6 +4,7 @@ import logging
 import re
 
 from poc.agent.state import AgentState
+from poc.llm.budget import BudgetExceededError
 from poc.llm.provider import LLMMessage, LLMProvider
 
 _log = logging.getLogger(__name__)
@@ -73,6 +74,8 @@ def make_summarize_node(llm: LLMProvider, model: str):
             )
             draft = response.content
             cost = response.cost_usd or 0.0
+        except BudgetExceededError:
+            raise  # hard-stop must reach the API layer (S3.T4)
         except Exception as exc:
             _log.warning("Summarize node failed: %s", exc)
             draft = "UNKNOWN: summarization failed."

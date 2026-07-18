@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from poc.core.errors import DomainError
+from poc.llm.budget import BudgetExceededError
 from poc.llm.errors import LLMProviderError
 
 
@@ -31,6 +32,16 @@ def register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=200,
             content={"status": "refused", "reason": f"guardrail.{exc.reason}"},
+        )
+
+    @app.exception_handler(BudgetExceededError)
+    async def budget_handler(request: Request, exc: BudgetExceededError) -> JSONResponse:
+        # S3.T4 hard-stop: budget breach is a throttling condition, not a client
+        # error — 429 tells the caller to back off (or top up), mirroring provider
+        # rate-limit semantics. Registered before DomainError (it's a subclass).
+        return JSONResponse(
+            status_code=429,
+            content={"status": "error", "type": "budget_exceeded", "message": str(exc)},
         )
 
     @app.exception_handler(DomainError)

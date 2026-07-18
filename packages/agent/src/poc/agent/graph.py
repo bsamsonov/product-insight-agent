@@ -32,6 +32,18 @@ def _make_should_review(enable_hitl: bool):
     return _should_review
 
 
+# S3.T2: which router role each graph node speaks as when routing is enabled.
+# Kept at the wiring layer — nodes stay role-agnostic, router.yaml owns models.
+_NODE_ROLES: dict[str, str] = {
+    "intent": "classifier",
+    "plan": "planner",
+    "cluster": "planner",
+    "summarize": "summarizer",
+    "judge": "judge",
+    "groundedness": "judge",
+}
+
+
 def build_graph(
     *,
     llm: LLMProvider,
@@ -41,6 +53,7 @@ def build_graph(
     summarize_model: str,
     judge_model: str,
     enable_hitl: bool = False,
+    router: Any | None = None,  # RoutedLLM — enables role-based routing (S3.T2)
 ) -> StateGraph:
     """Build and compile the Product Insight Agent graph.
 
@@ -49,24 +62,50 @@ def build_graph(
     and is compiled with a ``MemorySaver`` checkpointer so it can be resumed. When
     False, the ``groundedness`` gate routes straight to END and no checkpointer is
     attached.
+
+    When ``router`` (a :class:`~poc.llm.router.RoutedLLM`) is given, every node
+    talks to the LLM through a :class:`~poc.llm.role_provider.RoleScopedLLM`
+    bound to its role in ``_NODE_ROLES`` — provider+model resolution, fallback,
+    response cache, and budget enforcement then live in the router. The
+    ``*_model`` arguments are ignored in that mode. The judge node additionally
+    receives an ``escalate``-scoped provider for low-confidence re-runs.
     """
+
+    escalate_llm = None
+    if router is not None:
+        from poc.llm.role_provider import RoleScopedLLM
+
+        node_llm = {node: RoleScopedLLM(router, role) for node, role in _NODE_ROLES.items()}
+        escalate_llm = RoleScopedLLM(router, "escalate")
+    else:
+        node_llm = dict.fromkeys(_NODE_ROLES, llm)
 
     graph = StateGraph(AgentState)
 
     # Register nodes. Each node function is wrapped in @traced so every graph step
     # becomes an OTel span (agent.intent, agent.plan, …) without touching the node
     # bodies — the instrumentation lives entirely at the wiring layer.
-    graph.add_node("intent", traced("agent.intent")(make_intent_node(llm, intent_model)))
-    graph.add_node("plan", traced("agent.plan")(make_plan_node(llm, plan_model)))
-    graph.add_node("retrieve", traced("agent.retrieve")(make_retrieve_node(retriever)))
-    graph.add_node("cluster", traced("agent.cluster")(make_cluster_node(llm, plan_model)))
     graph.add_node(
-        "summarize", traced("agent.summarize")(make_summarize_node(llm, summarize_model))
+        "intent", traced("agent.intent")(make_intent_node(node_llm["intent"], intent_model))
     )
-    graph.add_node("judge", traced("agent.judge")(make_judge_node(llm, judge_model)))
+    graph.add_node("plan", traced("agent.plan")(make_plan_node(node_llm["plan"], plan_model)))
+    graph.add_node("retrieve", traced("agent.retrieve")(make_retrieve_node(retriever)))
+    graph.add_node(
+        "cluster", traced("agent.cluster")(make_cluster_node(node_llm["cluster"], plan_model))
+    )
+    graph.add_node(
+        "summarize",
+        traced("agent.summarize")(make_summarize_node(node_llm["summarize"], summarize_model)),
+    )
+    graph.add_node(
+        "judge",
+        traced("agent.judge")(
+            make_judge_node(node_llm["judge"], judge_model, escalate_llm=escalate_llm)
+        ),
+    )
     graph.add_node(
         "groundedness",
-        traced("agent.groundedness")(make_groundedness_node(llm, judge_model)),
+        traced("agent.groundedness")(make_groundedness_node(node_llm["groundedness"], judge_model)),
     )
     graph.add_node("hitl", traced("agent.hitl")(make_hitl_node()))
 

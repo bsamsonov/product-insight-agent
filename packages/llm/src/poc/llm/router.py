@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from poc.llm.context import current_budget_context
 from poc.llm.errors import LLMProviderError, LLMRateLimitError
 from poc.llm.provider import LLMMessage, LLMProvider, LLMResponse
 from pydantic import BaseModel
@@ -64,7 +65,13 @@ class RoutedLLM:
         )
     """
 
-    def __init__(self, config_path: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        config_path: Path | str | None = None,
+        *,
+        cache: Any | None = None,  # RedisResponseCache | FakeRedisCache
+        budget_guard: Any | None = None,  # BudgetGuard | FakeBudgetGuard
+    ) -> None:
         path = Path(config_path) if config_path is not None else _find_config()
         with path.open() as fh:
             raw: dict[str, Any] = yaml.safe_load(fh)
@@ -72,8 +79,15 @@ class RoutedLLM:
         self._routes: dict[str, _RouteConfig] = {
             role: _RouteConfig.model_validate(cfg) for role, cfg in raw.get("routes", {}).items()
         }
+        # Budget limits declared in router.yaml (`budgets:`) — single source of truth
+        # for callers constructing a BudgetGuard (see apps/api lifespan).
+        self.budgets: dict[str, Any] = raw.get("budgets", {}) or {}
         # Cache provider instances by name to avoid re-creating the async HTTP client
         self._providers: dict[str, Any] = {}  # str → OpenAICompatibleProvider
+        # Optional S3.T3/S3.T4 integrations. When set, route() consults the response
+        # cache before dialing out and charges the budget guard after each real call.
+        self._cache = cache
+        self._budget_guard = budget_guard
 
     # ------------------------------------------------------------------
     # Public API
@@ -109,8 +123,22 @@ class RoutedLLM:
             raise KeyError(f"Unknown LLM role '{role}'. Available: {sorted(self._routes)}")
         cfg = self._routes[role]
 
+        # S3.T3: consult the response cache before dialing out. The key is derived
+        # from the *primary* endpoint so a fallback response is served for the same
+        # logical request. Cache hits cost $0 and are not charged against budgets.
+        cache_key: str | None = None
+        if self._cache is not None:
+            cache_key = self._cache._make_key(
+                cfg.primary.provider, cfg.primary.model, messages, temperature,
+                cfg.primary.max_tokens,
+            )
+            hit = await self._cache.get(cache_key)
+            if hit is not None:
+                _log.debug("RoutedLLM cache hit for role '%s'", role)
+                return hit
+
         try:
-            return await self._call_endpoint(
+            response = await self._call_endpoint(
                 cfg.primary, messages, response_format=response_format, temperature=temperature
             )
         except (LLMRateLimitError, LLMProviderError) as exc:
@@ -123,14 +151,41 @@ class RoutedLLM:
                 exc,
                 cfg.fallback.provider,
             )
+            response = await self._call_endpoint(
+                cfg.fallback, messages, response_format=response_format, temperature=temperature
+            )
 
-        return await self._call_endpoint(
-            cfg.fallback, messages, response_format=response_format, temperature=temperature
-        )
+        # S3.T4: charge the budget *after* the call, once the real cost is known.
+        # BudgetGuard commits the spend and raises BudgetExceededError on breach —
+        # the error must propagate to the API layer (mapped to HTTP 429).
+        await self._charge_budget(response)
+
+        if cache_key is not None:
+            await self._cache.set(cache_key, response)
+        return response
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _charge_budget(self, response: LLMResponse) -> None:
+        """Charge the call cost against the request-scoped budget context (S3.T4).
+
+        Reads tenant and running request total from the contextvar set by
+        ``agent.run()`` (see :mod:`poc.llm.context`). Outside a request scope the
+        tenant defaults to "default" with a zero running total — the per-call and
+        daily-tenant limits still apply.
+        """
+        cost = response.cost_usd or 0.0
+        ctx = current_budget_context()
+        if self._budget_guard is not None:
+            tenant = ctx.tenant if ctx is not None else "default"
+            running_total = ctx.total_usd if ctx is not None else 0.0
+            await self._budget_guard.check_and_increment(
+                tenant, cost, request_total_usd=running_total
+            )
+        if ctx is not None:
+            ctx.add_cost(cost)
 
     def _get_provider(self, name: str) -> Any:
         """Return a cached ``OpenAICompatibleProvider`` for *name*."""

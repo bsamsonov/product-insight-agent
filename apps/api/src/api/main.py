@@ -56,7 +56,44 @@ async def _build_audit() -> AuditLogger | PostgresAuditStore:
     return AuditLogger("audit.jsonl")
 
 
-def _build_agent(provider: Any) -> Any | None:
+def _build_router() -> Any | None:
+    """Build a RoutedLLM with response cache and budget caps (S3.T2-T4).
+
+    Opt-in via POC_USE_ROUTER=1 — the default single-provider path stays intact.
+    Backing stores: with POC_REDIS_URL set, cache and budget counters live in Redis
+    (docker-compose service); without it we degrade to the in-memory fakes so the
+    router still works — with per-process (non-durable) budgets — on a bare laptop.
+    Budget limits come from `budgets:` in router.yaml, the single source of truth.
+    """
+    if os.getenv("POC_USE_ROUTER", "0").lower() not in ("1", "true", "yes"):
+        return None
+    from poc.llm.budget import BudgetGuard, FakeBudgetGuard
+    from poc.llm.cache import FakeRedisCache, RedisResponseCache
+    from poc.llm.router import RoutedLLM
+
+    limits = RoutedLLM().budgets  # read budgets: from router.yaml
+    per_request = float(limits.get("per_request_usd", 0.05))
+    per_tenant_daily = float(limits.get("per_tenant_daily_usd", 5.0))
+
+    redis_url = os.getenv("POC_REDIS_URL", "")
+    if redis_url:
+        cache: Any = RedisResponseCache(redis_url)
+        guard: Any = BudgetGuard(
+            redis_url=redis_url,
+            per_request_usd=per_request,
+            per_tenant_daily_usd=per_tenant_daily,
+        )
+        _log.info("LLM router enabled: Redis cache+budget at %s", redis_url)
+    else:
+        cache = FakeRedisCache()
+        guard = FakeBudgetGuard(
+            per_request_usd=per_request, per_tenant_daily_usd=per_tenant_daily
+        )
+        _log.warning("LLM router enabled without POC_REDIS_URL — in-memory cache/budget")
+    return RoutedLLM(cache=cache, budget_guard=guard)
+
+
+def _build_agent(provider: Any, router: Any | None = None) -> Any | None:
     """Build a ProductInsightAgent backed by a BM25-first HybridRetriever.
 
     Graceful degradation, mirroring scripts/run_eval.py: if Qdrant or the reranker
@@ -97,7 +134,7 @@ def _build_agent(provider: Any) -> Any | None:
             reranker=NoOpReranker(),
         )
         _log.info("Agent pipeline ready: BM25 index with %d chunks", len(bm25))
-        return ProductInsightAgent(llm=provider, retriever=retriever)
+        return ProductInsightAgent(llm=provider, retriever=retriever, router=router)
     except Exception as exc:
         _log.warning("Agent pipeline unavailable (%s) — /ask uses direct LLM path", exc)
         return None
@@ -113,7 +150,8 @@ async def lifespan(app: FastAPI):
     provider = get_provider(settings.default_provider)
     _state["provider"] = provider
     _state["provider_name"] = settings.default_provider
-    _state["agent"] = _build_agent(provider)
+    _state["router"] = _build_router()
+    _state["agent"] = _build_agent(provider, _state["router"])
     _state["audit"] = await _build_audit()
     yield
     audit = _state.get("audit")

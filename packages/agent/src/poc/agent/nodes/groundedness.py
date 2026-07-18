@@ -4,6 +4,7 @@ import logging
 
 from poc.agent.state import AgentState
 from poc.guardrails.groundedness import GroundednessChecker
+from poc.llm.budget import BudgetExceededError
 from poc.llm.provider import LLMProvider
 
 _log = logging.getLogger(__name__)
@@ -46,6 +47,8 @@ def make_groundedness_node(
         try:
             result = await checker.check(answer_text, context_chunks)
             score = result.score
+        except BudgetExceededError:
+            raise  # hard-stop must reach the API layer (S3.T4)
         except Exception as exc:  # checker is fail-soft, but never crash the graph
             _log.warning("Groundedness node failed: %s", exc)
             judgement["groundedness"] = None

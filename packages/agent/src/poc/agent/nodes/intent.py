@@ -4,6 +4,7 @@ import logging
 from typing import Literal
 
 from poc.agent.state import AgentState
+from poc.llm.budget import BudgetExceededError
 from poc.llm.provider import LLMMessage, LLMProvider
 from pydantic import BaseModel
 
@@ -48,6 +49,8 @@ def make_intent_node(llm: LLMProvider, model: str):
             intent = result.intent if result.intent in _VALID_INTENTS else "other"
             confidence = max(0.0, min(1.0, result.confidence))
             cost = response.cost_usd or 0.0
+        except BudgetExceededError:
+            raise  # hard-stop must reach the API layer (S3.T4)
         except Exception as exc:
             _log.warning("Intent classification failed: %s", exc)
             intent = "general"

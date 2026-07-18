@@ -155,6 +155,25 @@ The default LLM provider is resolved from `POC_DEFAULT_PROVIDER` (falls back to
 self-hosted gateways — see
 [docs/adr/0008-multi-provider-llm-strategy.md](docs/adr/0008-multi-provider-llm-strategy.md).
 
+### Cost & routing mode (S3)
+
+Set `POC_USE_ROUTER=1` to route every agent node through `RoutedLLM`
+([`packages/llm/data/router.yaml`](packages/llm/data/router.yaml)):
+
+- **role-based model selection** — intent speaks as `classifier` (cheap/fast),
+  summarize as `summarizer` (strong), judge as `judge`; models and providers per
+  role live in router.yaml, not in code;
+- **automatic fallback** — a 429/503 from the primary provider switches the call
+  to the fallback provider without failing the request;
+- **judge escalation** — a low-confidence verdict (score < 0.5) is re-judged once
+  through the stronger `escalate` route;
+- **response cache** — identical calls are served from Redis (`POC_REDIS_URL`);
+  provider-side prompt-cache hits are surfaced as `cached_input_tokens`;
+- **budget caps** — per-request and per-tenant-day USD limits (from
+  `budgets:` in router.yaml) enforced via Redis counters; a breach maps to
+  HTTP 429 (`budget_exceeded`). Without `POC_REDIS_URL` the router degrades to
+  in-memory cache/budget (dev only).
+
 ## Structure
 
 ```

@@ -1,0 +1,47 @@
+name: Eval
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  eval-gate:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-packages
+      - run: |
+          uv run python scripts/run_eval.py \
+            --golden-set packages/evals/data/golden_set_sample.jsonl \
+            --data-path data/raw/sample_reviews.jsonl \
+            --retrieval-only \
+            --min-hit-rate 0.8
+
+  eval-judge:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      POC_GEMINI_API_KEY: ${{ secrets.POC_GEMINI_API_KEY }}
+      POC_DEFAULT_PROVIDER: gemini
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-packages
+      - run: |
+          uv run python scripts/run_eval.py \
+            --golden-set packages/evals/data/golden_set_sample.jsonl \
+            --data-path data/raw/sample_reviews.jsonl \
+            --metrics faithfulness,answer_relevance,citation_precision,groundedness_heuristic \
+            --output eval-report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval-report.json

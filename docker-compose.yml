@@ -1,0 +1,210 @@
+# docker-compose.yml — Product Insight Agent POC
+#
+# Starts: Postgres 16, Qdrant, Redis 7, ClickHouse, MinIO, Langfuse (server + worker).
+# Usage:
+#   cp infra/langfuse/.env.example infra/langfuse/.env   # fill secrets once
+#   docker compose up -d
+#
+# Ports exposed on localhost:
+#   5432  — Postgres
+#   6333  — Qdrant HTTP  (gRPC: 6334)
+#   6379  — Redis
+#   8123  — ClickHouse HTTP (Langfuse trace/analytics storage)
+#   9000  — MinIO API   (Langfuse blob/event storage)
+#   9001  — MinIO Console UI
+#   3000  — Langfuse UI / API
+
+services:
+
+  # ── Postgres 16 ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # Primary app database; langfuse_db created by init.sql below.
+      POSTGRES_DB: poc_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Qdrant ─────────────────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - ./infra/qdrant/config.yaml:/qdrant/config/production.yaml:ro
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/bash -c '</dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Redis 7 ────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── ClickHouse (Langfuse v3 analytics/trace storage) ──────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-langfuse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./infra/clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user ${CLICKHOUSE_USER:-langfuse} --password ${CLICKHOUSE_PASSWORD:-langfuse} --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── MinIO (S3-compatible blob/event storage for Langfuse v3) ──────────────
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-langfuse}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-langfuse_secret}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local 2>/dev/null || wget -qO- http://localhost:9000/minio/health/live | grep -q . || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot container that creates required MinIO buckets on first run.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-langfuse} ${MINIO_ROOT_PASSWORD:-langfuse_secret};
+        mc mb --ignore-existing local/langfuse-events;
+        mc mb --ignore-existing local/langfuse-media;
+        echo 'MinIO buckets ready.';
+      "
+    restart: "no"
+
+  # ── Langfuse server ────────────────────────────────────────────────────────
+  # Serves the UI and public API, handles SDK ingestion.
+  langfuse-server:
+    image: langfuse/langfuse:3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./infra/langfuse/.env
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langfuse_db"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      CLICKHOUSE_MIGRATION_URL: "clickhouse://${CLICKHOUSE_USER:-langfuse}:${CLICKHOUSE_PASSWORD:-langfuse}@clickhouse:9000"
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-langfuse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse-events
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-langfuse}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-langfuse_secret}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://minio:9000"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse-media
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-langfuse}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-langfuse_secret}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: "http://minio:9000"
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+    ports:
+      - "${LANGFUSE_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://$(hostname -i | tr -d ' '):3000/api/public/health | grep -qi ok || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── Langfuse worker ────────────────────────────────────────────────────────
+  # Processes async jobs (eval runs, score computation, exports).
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./infra/langfuse/.env
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langfuse_db"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      CLICKHOUSE_MIGRATION_URL: "clickhouse://${CLICKHOUSE_USER:-langfuse}:${CLICKHOUSE_PASSWORD:-langfuse}@clickhouse:9000"
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-langfuse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse-events
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-langfuse}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-langfuse_secret}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://minio:9000"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse-media
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-langfuse}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-langfuse_secret}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: "http://minio:9000"
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  redis_data:
+  clickhouse_data:
+  minio_data:

@@ -1,0 +1,4 @@
+<!-- Force ClickHouse to listen on all interfaces so other containers can connect -->
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+</clickhouse>

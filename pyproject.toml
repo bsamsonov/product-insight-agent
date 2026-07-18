@@ -1,0 +1,50 @@
+[project]
+name = "product-insight-agent"
+version = "0.1.0"
+description = "Multi-tenant agentic RAG system: LangGraph, hybrid retrieval, LLM routing with budget caps, guardrails, evals as CI gate"
+requires-python = ">=3.12"
+dependencies = [
+  "typer>=0.12",
+  "poc-llm",
+  "poc-guardrails",
+]
+
+[project.scripts]
+ask = "scripts.ask:app"
+
+[tool.uv.sources]
+poc-llm = { workspace = true }
+poc-guardrails = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["scripts"]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.9",
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+  "respx>=0.21",
+  "httpx>=0.27",
+]
+
+[tool.uv.workspace]
+members = ["apps/*", "packages/*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [".claude"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "TID", "RUF"]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--import-mode=importlib"

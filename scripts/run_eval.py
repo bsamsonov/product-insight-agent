@@ -7,8 +7,13 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
+
+if TYPE_CHECKING:
+    from poc.evals.runner import EvalCase
+    from poc.retrieval.hybrid import HybridRetriever
 
 app = typer.Typer(help="Run baseline RAG evaluation.")
 _log = logging.getLogger(__name__)
@@ -44,6 +49,11 @@ def main(
         "--baseline",
         help="Previous run JSON to compare against",
     ),
+    data_path: Path = typer.Option(  # noqa: B008
+        Path("data/raw/reviews.jsonl"),
+        "--data-path",
+        help="Path to the corpus JSONL used to build the BM25 index",
+    ),
     limit: int | None = typer.Option(None, help="Max eval cases to run"),
     judge: bool = typer.Option(True, help="Run faithfulness LLM judge (legacy flag)"),
     use_agent: bool = typer.Option(
@@ -62,6 +72,19 @@ def main(
             "Non-LLM: citation_precision,groundedness_heuristic. "
             "LLM-based: faithfulness,answer_relevance,context_precision,context_recall."
         ),
+    ),
+    retrieval_only: bool = typer.Option(
+        False,
+        "--retrieval-only",
+        help=(
+            "Skip the LLM provider and answer generation entirely; only run retrieval "
+            "and compute a hit-rate gate. Works fully offline, no API keys required."
+        ),
+    ),
+    min_hit_rate: float = typer.Option(
+        0.8,
+        "--min-hit-rate",
+        help="Minimum acceptable hit_rate in --retrieval-only mode; exits 1 if not met",
     ),
 ) -> None:
     logging.basicConfig(level=logging.WARNING)
@@ -86,6 +109,8 @@ def main(
     resolved_provider = provider or LLMSettings().default_provider
     resolved_model = model or default_model_for(resolved_provider)
 
+    resolved_data_path = data_path if data_path.is_absolute() else _PROJECT_ROOT / data_path
+
     asyncio.run(
         _run_eval(
             eval_set=eval_set,
@@ -95,10 +120,13 @@ def main(
             model=resolved_model,
             output=resolved_output,
             baseline=baseline,
+            data_path=resolved_data_path,
             limit=limit,
             run_judge=judge,
             use_agent=use_agent,
             metric_names=[m.strip() for m in metrics.split(",") if m.strip()],
+            retrieval_only=retrieval_only,
+            min_hit_rate=min_hit_rate,
         )
     )
 
@@ -112,10 +140,13 @@ async def _run_eval(
     model: str,
     output: Path,
     baseline: Path | None,
+    data_path: Path,
     limit: int | None,
     run_judge: bool,
     use_agent: bool,
     metric_names: list[str],
+    retrieval_only: bool = False,
+    min_hit_rate: float = 0.8,
 ) -> None:
     from poc.core.models import Question
     from poc.evals.metrics import (
@@ -154,18 +185,22 @@ async def _run_eval(
     # in the LLM and agent layers use the global no-op provider and export nothing.
     configure_tracing(service_name="run-eval")
 
-    typer.echo("Loading LLM provider...")
-    llm = OpenAICompatibleProvider.from_env(provider)
+    llm = None
+    if not retrieval_only:
+        typer.echo("Loading LLM provider...")
+        llm = OpenAICompatibleProvider.from_env(provider)
 
     typer.echo("Loading eval cases...")
     cases = load_eval_cases(eval_set)
     if limit:
         cases = cases[:limit]
-    typer.echo(f"Running {len(cases)} eval cases with metrics: {metric_names}")
+    if retrieval_only:
+        typer.echo(f"Running {len(cases)} eval cases in retrieval-only mode")
+    else:
+        typer.echo(f"Running {len(cases)} eval cases with metrics: {metric_names}")
 
     bm25 = BM25Index()
-    data_dir = _PROJECT_ROOT / "data" / "raw"
-    reviews_path = data_dir / "reviews.jsonl"
+    reviews_path = data_path
 
     if reviews_path.exists():
         typer.echo("Loading documents into BM25 index...")
@@ -207,6 +242,16 @@ async def _run_eval(
         bm25_index=bm25,
         reranker=reranker,
     )
+
+    if retrieval_only:
+        await _run_retrieval_only(
+            cases=cases,
+            retriever=retriever,
+            eval_set=eval_set,
+            output=output,
+            min_hit_rate=min_hit_rate,
+        )
+        return
 
     if use_agent:
         from poc.agent.agent import ProductInsightAgent
@@ -401,6 +446,82 @@ async def _run_eval(
     from opentelemetry import trace
 
     trace.get_tracer_provider().force_flush()
+
+
+def compute_hit(retrieved_chunk_ids: list[str], expected_chunk_ids: list[str]) -> bool:
+    """True if at least one expected chunk id was retrieved."""
+    if not expected_chunk_ids:
+        return False
+    return bool(set(retrieved_chunk_ids) & set(expected_chunk_ids))
+
+
+async def _run_retrieval_only(
+    *,
+    cases: list[EvalCase],
+    retriever: HybridRetriever,
+    eval_set: Path,
+    output: Path,
+    min_hit_rate: float,
+    top_k: int = 10,
+) -> None:
+    """Retrieval-only eval mode: no LLM, no answer generation, no network required.
+
+    For each case, run hybrid retrieval (BM25-only when Qdrant is unavailable) and
+    check whether at least one of the case's `expected_chunk_ids` was retrieved.
+    Reports the overall hit_rate and exits non-zero if it falls below `min_hit_rate`
+    — this is the keyless CI gate.
+    """
+    per_case: list[dict] = []
+    hits = 0
+
+    for i, case in enumerate(cases):
+        typer.echo(f"[{i + 1}/{len(cases)}] {case.id}: {case.question[:60]}...")
+        scored = retriever.retrieve(case.question, top_k=top_k, filters=case.filters or None)
+        retrieved_ids = [sc.chunk.id for sc in scored]
+        hit = compute_hit(retrieved_ids, case.expected_chunk_ids)
+        if hit:
+            hits += 1
+        per_case.append(
+            {
+                "id": case.id,
+                "question": case.question,
+                "hit": hit,
+                "retrieved_count": len(retrieved_ids),
+                "retrieved_chunk_ids": retrieved_ids,
+            }
+        )
+
+    n = len(cases)
+    hit_rate = round(hits / n, 4) if n else 0.0
+
+    report = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "golden_set": eval_set.stem,
+        "mode": "retrieval_only",
+        "summary": {
+            "total_cases": n,
+            "hits": hits,
+            "hit_rate": hit_rate,
+            "min_hit_rate": min_hit_rate,
+        },
+        "per_case": per_case,
+    }
+
+    typer.echo("\n=== Retrieval-only Eval Report ===")
+    typer.echo(f"Total cases: {n}")
+    typer.echo(f"Hits:        {hits}")
+    typer.echo(f"Hit rate:    {hit_rate:.4f} (min required: {min_hit_rate:.4f})")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    typer.echo(f"\nReport saved to: {output}")
+
+    if hit_rate < min_hit_rate:
+        typer.echo(
+            f"\nFAIL: hit_rate {hit_rate:.4f} is below the required minimum {min_hit_rate:.4f}",
+            err=True,
+        )
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

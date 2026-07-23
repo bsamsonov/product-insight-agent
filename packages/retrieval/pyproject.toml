@@ -8,6 +8,10 @@ dependencies = [
     "qdrant-client>=1.9",
     "rank-bm25>=0.2",
     "sentence-transformers>=3.0",
+    # Declare torch directly so the workspace-root CPU index override binds
+    # (uv sources apply to direct deps). Capped to what the CPU index carries
+    # for cp312 (latest there is 2.9.x); avoids the CUDA build from PyPI.
+    "torch<2.10",
 ]
 
 [build-system]

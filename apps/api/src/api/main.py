@@ -86,9 +86,7 @@ def _build_router() -> Any | None:
         _log.info("LLM router enabled: Redis cache+budget at %s", redis_url)
     else:
         cache = FakeRedisCache()
-        guard = FakeBudgetGuard(
-            per_request_usd=per_request, per_tenant_daily_usd=per_tenant_daily
-        )
+        guard = FakeBudgetGuard(per_request_usd=per_request, per_tenant_daily_usd=per_tenant_daily)
         _log.warning("LLM router enabled without POC_REDIS_URL — in-memory cache/budget")
     return RoutedLLM(cache=cache, budget_guard=guard)
 

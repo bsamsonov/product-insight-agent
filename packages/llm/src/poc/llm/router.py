@@ -129,7 +129,10 @@ class RoutedLLM:
         cache_key: str | None = None
         if self._cache is not None:
             cache_key = self._cache._make_key(
-                cfg.primary.provider, cfg.primary.model, messages, temperature,
+                cfg.primary.provider,
+                cfg.primary.model,
+                messages,
+                temperature,
                 cfg.primary.max_tokens,
             )
             hit = await self._cache.get(cache_key)

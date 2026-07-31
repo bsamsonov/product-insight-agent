@@ -18,9 +18,7 @@ from poc.llm.provider import LLMResponse
 
 def _judge_response(score: float, cost: float = 0.01) -> LLMResponse:
     return LLMResponse(
-        content=json.dumps(
-            {"score": score, "passed": score >= 0.6, "reasoning": "test"}
-        ),
+        content=json.dumps({"score": score, "passed": score >= 0.6, "reasoning": "test"}),
         model="test-model",
         input_tokens=10,
         output_tokens=5,

@@ -18,7 +18,7 @@ with namespace packages under `poc.*`.
 ## Commands
 
 ```bash
-uv sync                  # install all deps
+uv sync --all-packages   # install all workspace deps
 uv run pytest            # run tests
 uv run ruff check .      # lint
 uv run ruff format .     # format

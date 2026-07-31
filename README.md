@@ -26,7 +26,7 @@ flowchart LR
 
 1. `cp .env.example .env` — fill in at minimum `POC_GEMINI_API_KEY` (free at [aistudio.google.com](https://aistudio.google.com))
 2. `docker compose up -d` — starts Qdrant, Redis, Postgres, Langfuse
-3. `uv sync` — install all dependencies
+3. `uv sync --all-packages` — install all workspace dependencies
 4. `uv run python scripts/index.py --source data/raw/reviews.jsonl --tenant default --limit 1000` — index sample data
 5. `uv run ask "What do customers say about hair and skincare products?"` — CLI test
 6. `uv run uvicorn api.main:app --port 8000` — start API
@@ -196,8 +196,7 @@ packages/
 
 | Document | Description |
 |----------|-------------|
-| [`docs/adr/`](docs/adr/) | Architecture Decision Records (7 ADRs) |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records (8 ADRs) |
 | [`docs/cost-model.md`](docs/cost-model.md) | Cost projections at various QPS levels |
 | [`docs/security/redteam-report.md`](docs/security/redteam-report.md) | OWASP LLM Top-10 assessment |
-| [`06_implementation_plan.md`](docs/planning/06_implementation_plan.md) | Full sprint plan with acceptance criteria |
-| [`poc_eval_mini/`](poc_eval_mini/README.md) | Standalone "for understanding" mini-PoC: a 3-node LangGraph (retrieve → agent → critic) with an optional agentic reflection loop. Isolated from `poc.*`; borrows only the data, `.env` and LLM provider |
+| [`docs/demo/script.md`](docs/demo/script.md) | End-to-end demo walkthrough |

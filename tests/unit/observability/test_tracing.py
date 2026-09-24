@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import base64
 import functools
 import json
 
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from poc.observability.langfuse_stub import LangfuseTracer, _NoOpContext
-from poc.observability.tracing import _make_langfuse_processor, record_llm_call, traced
+from poc.observability import langfuse_client
+from poc.observability.tracing import record_llm_call, traced
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -274,68 +273,102 @@ class TestRecordLlmCall:
 
 
 # ---------------------------------------------------------------------------
-# LangfuseTracer stub
+# Langfuse client wiring
 # ---------------------------------------------------------------------------
 
 
-class TestLangfuseStub:
-    def test_methods_return_noop(self):
-        tracer = LangfuseTracer()
-        assert isinstance(tracer.trace(name="t"), _NoOpContext)
-        assert isinstance(tracer.span(name="s"), _NoOpContext)
-        assert isinstance(tracer.generation(name="g"), _NoOpContext)
-
-    def test_noop_chaining(self):
-        """Simulate: tracer.trace(...).generation(...).end() — must not raise."""
-        tracer = LangfuseTracer()
-        tracer.trace(name="t").generation(name="g").end()
-
-    def test_noop_context_manager(self):
-        tracer = LangfuseTracer()
-        with tracer.span(name="s") as s:
-            assert s is not None
-
-    def test_flush_and_shutdown_do_not_raise(self):
-        tracer = LangfuseTracer()
-        tracer.flush()
-        tracer.shutdown()
-
-    def test_noop_getattr_returns_noop(self):
-        """Arbitrary attribute access on _NoOpContext must return another _NoOpContext."""
-        ctx = _NoOpContext()
-        result = ctx.anything.chained.deeply
-        assert isinstance(result, _NoOpContext)
+@pytest.fixture
+def _no_langfuse_client():
+    langfuse_client._reset_for_tests()
+    yield
+    langfuse_client._reset_for_tests()
 
 
-# ---------------------------------------------------------------------------
-# Langfuse OTLP exporter wiring (S3.T6)
-# ---------------------------------------------------------------------------
-
-
-class TestLangfuseProcessor:
-    def test_returns_none_without_host(self, monkeypatch):
-        """No LANGFUSE_HOST → no OTLP export (app runs without errors)."""
-        monkeypatch.delenv("LANGFUSE_HOST", raising=False)
-        assert _make_langfuse_processor() is None
-
-    def test_registers_otlp_processor_with_host(self, monkeypatch):
-        """LANGFUSE_HOST set → a BatchSpanProcessor shipping to the Langfuse OTLP endpoint."""
+@pytest.mark.usefixtures("_no_langfuse_client")
+class TestLangfuseClient:
+    def _set_env(self, monkeypatch):
         monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3000")
-        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "lf-pub-x")
-        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "lf-sk-y")
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
 
-        processor = _make_langfuse_processor()
+    def test_not_attached_without_env(self, monkeypatch):
+        """No LANGFUSE_* env → no export, no client, no errors."""
+        for var in ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        provider = TracerProvider()
+        assert langfuse_client.attach_to_provider(provider) is False
+        assert langfuse_client.enabled() is False
 
-        assert isinstance(processor, BatchSpanProcessor)
-        exporter = processor.span_exporter
-        assert exporter._endpoint == "http://localhost:3000/api/public/otel/v1/traces"
-        # Basic auth header is base64(public:secret).
-        expected = base64.b64encode(b"lf-pub-x:lf-sk-y").decode()
-        assert exporter._headers["Authorization"] == f"Basic {expected}"
+    def test_partial_env_is_not_configured(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3000")
+        monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+        assert langfuse_client.is_configured() is False
 
-    def test_strips_trailing_slash_from_host(self, monkeypatch):
-        monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3000/")
-        processor = _make_langfuse_processor()
-        assert processor.span_exporter._endpoint == (
-            "http://localhost:3000/api/public/otel/v1/traces"
-        )
+    def test_attaches_sdk_processor_to_our_provider(self, monkeypatch):
+        """Full env → the Langfuse SDK span processor is added to *our* provider."""
+        self._set_env(monkeypatch)
+        provider = TracerProvider()
+        assert langfuse_client.attach_to_provider(provider) is True
+        assert langfuse_client.enabled() is True
+        processors = provider._active_span_processor._span_processors
+        assert any(type(p).__name__ == "LangfuseSpanProcessor" for p in processors)
+
+    def test_scores_are_noop_when_disabled(self):
+        langfuse_client.score_trace("0" * 32, name="judge_score", value=0.9)
+        langfuse_client.score_current_trace("judge_score", 0.9)
+        langfuse_client.flush()
+
+    def test_score_trace_calls_sdk(self, monkeypatch):
+        calls = []
+
+        class _FakeClient:
+            def create_score(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr(langfuse_client, "_client", _FakeClient())
+        langfuse_client.score_trace("abc", name="judge_score", value=1, comment="ok")
+        assert calls == [
+            {
+                "trace_id": "abc",
+                "name": "judge_score",
+                "value": 1.0,
+                "data_type": "NUMERIC",
+                "comment": "ok",
+                "score_id": "abc:judge_score",
+            }
+        ]
+
+    def test_score_failure_is_swallowed(self, monkeypatch):
+        class _Boom:
+            def create_score(self, **kwargs):
+                raise RuntimeError("network down")
+
+        monkeypatch.setattr(langfuse_client, "_client", _Boom())
+        langfuse_client.score_trace("abc", name="x", value=0.1)  # must not raise
+
+    def test_current_trace_id_inside_span(self):
+        provider, _ = _make_provider()
+        assert langfuse_client.current_trace_id() is None
+        with provider.get_tracer("t").start_as_current_span("root") as span:
+            expected = format(span.get_span_context().trace_id, "032x")
+            assert langfuse_client.current_trace_id() == expected
+
+    def test_set_trace_attributes(self):
+        provider, exporter = _make_provider()
+        with provider.get_tracer("t").start_as_current_span("root") as span:
+            langfuse_client.set_trace_attributes(
+                span,
+                name="ask",
+                session_id="s1",
+                user_id="acme",
+                tags=["agent"],
+                input={"question": "q"},
+                output="answer",
+            )
+        attrs = exporter.get_finished_spans()[0].attributes
+        assert attrs["langfuse.trace.name"] == "ask"
+        assert attrs["session.id"] == "s1"
+        assert attrs["user.id"] == "acme"
+        assert list(attrs["langfuse.trace.tags"]) == ["agent"]
+        assert json.loads(attrs["langfuse.trace.input"]) == {"question": "q"}
+        assert attrs["langfuse.trace.output"] == "answer"

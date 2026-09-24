@@ -8,6 +8,7 @@ from poc.agent.state import AgentState
 from poc.core.models import Answer
 from poc.llm.context import request_budget
 from poc.llm.provider import LLMProvider
+from poc.observability import langfuse_client
 from poc.observability.tracing import get_tracer
 from poc.retrieval.hybrid import HybridRetriever
 
@@ -104,9 +105,23 @@ class ProductInsightAgent:
         # and an authoritative per-request cost total.
         with tracer.start_as_current_span("agent.run") as span, request_budget(tenant) as budget:
             span.set_attribute("tenant", tenant)
+            langfuse_client.set_trace_attributes(
+                span,
+                name="agent.run",
+                user_id=tenant,
+                session_id=thread_id,
+                input={"question": question, "filters": filters or {}},
+            )
             result: AgentState = await self._graph.ainvoke(state, config=config)
             span.set_attribute("intent", result.get("intent", ""))
             span.set_attribute("cost.request_total_usd", budget.total_usd)
+            final = result.get("final")
+            langfuse_client.set_trace_attributes(
+                span,
+                tags=[t for t in ("agent", result.get("intent")) if t],
+                output=final.text if final is not None else result.get("draft"),
+            )
+            _score_judgement(result.get("judgement") or {})
             return result
 
     async def resume_review(self, thread_id: str, *, approved: bool) -> AgentState:
@@ -145,3 +160,15 @@ class ProductInsightAgent:
             text=state.get("draft", "UNKNOWN: agent did not produce an answer."),
             cost_usd=state.get("cost_usd"),
         )
+
+
+def _score_judgement(judgement: dict[str, Any]) -> None:
+    """Attach the judge verdict and groundedness to the current trace as Langfuse scores."""
+    score = judgement.get("score")
+    if isinstance(score, int | float):
+        langfuse_client.score_current_trace(
+            "judge_score", float(score), comment=judgement.get("reasoning")
+        )
+    groundedness = judgement.get("groundedness")
+    if isinstance(groundedness, int | float):
+        langfuse_client.score_current_trace("groundedness", float(groundedness))

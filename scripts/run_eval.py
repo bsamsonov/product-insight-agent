@@ -166,7 +166,9 @@ async def _run_eval(
     from poc.ingestion.normalizer import normalize
     from poc.ingestion.sources.jsonl import JsonlSource
     from poc.llm.openai_compatible import OpenAICompatibleProvider
+    from poc.observability import langfuse_client
     from poc.observability.tracing import configure as configure_tracing
+    from poc.observability.tracing import get_tracer
     from poc.retrieval.bm25 import BM25Index
     from poc.retrieval.hybrid import HybridRetriever
     from poc.retrieval.qdrant_index import QdrantIndex
@@ -264,6 +266,9 @@ async def _run_eval(
         pipeline = RAGPipeline(retriever=retriever, llm=llm, model=model, top_k=8)
         typer.echo("Pipeline: RAGPipeline (baseline)")
 
+    tracer = get_tracer()
+    eval_run_id = f"eval-{eval_set.stem}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"
+
     results: list[EvalResult] = []
     # Per-metric accumulators: metric_name -> list[float]
     metric_accumulator: dict[str, list[float]] = {m: [] for m in metric_names}
@@ -271,92 +276,111 @@ async def _run_eval(
 
     for i, case in enumerate(cases):
         typer.echo(f"[{i + 1}/{len(cases)}] {case.id}: {case.question[:60]}...")
-        try:
-            if use_agent:
-                answer = await pipeline.get_answer(
-                    case.question, tenant=tenant, filters=case.filters or None
-                )
-            else:
-                q = Question(text=case.question, filters=case.filters)
-                answer = await pipeline.answer(q)
-            cited_ids = [c.chunk_id for c in answer.citations]
-
-            context_texts: list[str] = []
-            if bm25._chunks and active_llm_metrics:
-                context_texts = [sc.chunk.text for sc in retriever.retrieve(case.question, top_k=5)]
-
-            # Compute requested metrics
-            case_scores: dict[str, float] = {}
-
-            if "citation_precision" in metric_names:
-                cp = citation_precision(cited_ids, case.expected_chunk_ids)
-                case_scores["citation_precision"] = cp.score
-
-            if "groundedness_heuristic" in metric_names:
-                gh = groundedness_heuristic(answer.text, context_texts)
-                case_scores["groundedness_heuristic"] = gh.score
-
-            if "faithfulness" in metric_names and (run_judge or "faithfulness" in metric_names):
-                if context_texts:
-                    faith = await faithfulness(answer.text, context_texts, llm, model=model)
-                    case_scores["faithfulness"] = faith.score
-                else:
-                    case_scores["faithfulness"] = 0.0
-
-            if "answer_relevance" in metric_names:
-                ar = await answer_relevance(case.question, answer.text, llm, model=model)
-                case_scores["answer_relevance"] = ar.score
-
-            if "context_precision" in metric_names:
-                if context_texts:
-                    cp_llm = await ctx_precision(case.question, context_texts, llm, model=model)
-                    case_scores["context_precision"] = cp_llm.score
-                else:
-                    case_scores["context_precision"] = 1.0
-
-            if "context_recall" in metric_names:
-                expected_answer = " ".join(case.expected_answer_substrings)
-                if context_texts and expected_answer:
-                    cr = await ctx_recall(
-                        answer.text, expected_answer, context_texts, llm, model=model
+        # One Langfuse trace per case: the pipeline's node/LLM spans nest under
+        # `eval.case`, all cases of this run share a session, and every metric is
+        # attached as a score — so a run can be compared case by case in the UI.
+        with tracer.start_as_current_span("eval.case") as case_span:
+            langfuse_client.set_trace_attributes(
+                case_span,
+                name=f"eval.{eval_set.stem}.{case.id}",
+                session_id=eval_run_id,
+                tags=["eval", eval_set.stem, "agent" if use_agent else "baseline"],
+                input={"case_id": case.id, "question": case.question},
+            )
+            try:
+                if use_agent:
+                    answer = await pipeline.get_answer(
+                        case.question, tenant=tenant, filters=case.filters or None
                     )
-                    case_scores["context_recall"] = cr.score
                 else:
-                    case_scores["context_recall"] = 1.0 if not expected_answer else 0.0
+                    q = Question(text=case.question, filters=case.filters)
+                    answer = await pipeline.answer(q)
+                cited_ids = [c.chunk_id for c in answer.citations]
 
-            substr_match = _check_substrings(answer.text, case.expected_answer_substrings)
+                context_texts: list[str] = []
+                if bm25._chunks and active_llm_metrics:
+                    retrieved = retriever.retrieve(case.question, top_k=5)
+                    context_texts = [sc.chunk.text for sc in retrieved]
 
-            # Legacy EvalResult for backward compat
-            result = EvalResult(
-                case_id=case.id,
-                question=case.question,
-                answer_text=answer.text,
-                cited_chunk_ids=cited_ids,
-                faithfulness_score=case_scores.get("faithfulness", 0.0),
-                citation_precision_score=case_scores.get("citation_precision", 0.0),
-                substring_match=substr_match,
-                latency_ms=answer.latency_ms,
-                cost_usd=answer.cost_usd,
+                # Compute requested metrics
+                case_scores: dict[str, float] = {}
+
+                if "citation_precision" in metric_names:
+                    cp = citation_precision(cited_ids, case.expected_chunk_ids)
+                    case_scores["citation_precision"] = cp.score
+
+                if "groundedness_heuristic" in metric_names:
+                    gh = groundedness_heuristic(answer.text, context_texts)
+                    case_scores["groundedness_heuristic"] = gh.score
+
+                if "faithfulness" in metric_names and (run_judge or "faithfulness" in metric_names):
+                    if context_texts:
+                        faith = await faithfulness(answer.text, context_texts, llm, model=model)
+                        case_scores["faithfulness"] = faith.score
+                    else:
+                        case_scores["faithfulness"] = 0.0
+
+                if "answer_relevance" in metric_names:
+                    ar = await answer_relevance(case.question, answer.text, llm, model=model)
+                    case_scores["answer_relevance"] = ar.score
+
+                if "context_precision" in metric_names:
+                    if context_texts:
+                        cp_llm = await ctx_precision(case.question, context_texts, llm, model=model)
+                        case_scores["context_precision"] = cp_llm.score
+                    else:
+                        case_scores["context_precision"] = 1.0
+
+                if "context_recall" in metric_names:
+                    expected_answer = " ".join(case.expected_answer_substrings)
+                    if context_texts and expected_answer:
+                        cr = await ctx_recall(
+                            answer.text, expected_answer, context_texts, llm, model=model
+                        )
+                        case_scores["context_recall"] = cr.score
+                    else:
+                        case_scores["context_recall"] = 1.0 if not expected_answer else 0.0
+
+                substr_match = _check_substrings(answer.text, case.expected_answer_substrings)
+
+                # Legacy EvalResult for backward compat
+                result = EvalResult(
+                    case_id=case.id,
+                    question=case.question,
+                    answer_text=answer.text,
+                    cited_chunk_ids=cited_ids,
+                    faithfulness_score=case_scores.get("faithfulness", 0.0),
+                    citation_precision_score=case_scores.get("citation_precision", 0.0),
+                    substring_match=substr_match,
+                    latency_ms=answer.latency_ms,
+                    cost_usd=answer.cost_usd,
+                )
+                # Attach extended scores for output
+                result._scores = case_scores  # type: ignore[attr-defined]
+                result._retrieved_count = len(context_texts)  # type: ignore[attr-defined]
+
+            except Exception as exc:
+                _log.exception("Error on case %s", case.id)
+                result = EvalResult(
+                    case_id=case.id,
+                    question=case.question,
+                    answer_text="",
+                    cited_chunk_ids=[],
+                    faithfulness_score=0.0,
+                    citation_precision_score=0.0,
+                    substring_match=False,
+                    latency_ms=0,
+                    error=str(exc),
+                )
+                result._scores = {}  # type: ignore[attr-defined]
+                result._retrieved_count = 0  # type: ignore[attr-defined]
+
+            langfuse_client.set_trace_attributes(case_span, output=result.answer_text)
+            for m_name, m_value in getattr(result, "_scores", {}).items():
+                langfuse_client.score_current_trace(m_name, m_value)
+            langfuse_client.score_current_trace(
+                "substring_match", 1.0 if result.substring_match else 0.0
             )
-            # Attach extended scores for output
-            result._scores = case_scores  # type: ignore[attr-defined]
-            result._retrieved_count = len(context_texts)  # type: ignore[attr-defined]
-
-        except Exception as exc:
-            _log.exception("Error on case %s", case.id)
-            result = EvalResult(
-                case_id=case.id,
-                question=case.question,
-                answer_text="",
-                cited_chunk_ids=[],
-                faithfulness_score=0.0,
-                citation_precision_score=0.0,
-                substring_match=False,
-                latency_ms=0,
-                error=str(exc),
-            )
-            result._scores = {}  # type: ignore[attr-defined]
-            result._retrieved_count = 0  # type: ignore[attr-defined]
 
         results.append(result)
         substring_matches.append(result.substring_match)
@@ -407,6 +431,8 @@ async def _run_eval(
         },
         "per_case": per_case,
     }
+
+    langfuse_client.flush()
 
     typer.echo("\n=== Eval Report ===")
     typer.echo(f"Total cases:         {n}")

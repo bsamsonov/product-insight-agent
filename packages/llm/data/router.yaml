@@ -17,20 +17,20 @@ providers:
 
 routes:
   classifier:
-    primary:  { provider: gemini,    model: gemini-2.5-flash,        max_tokens: 256  }
+    primary:  { provider: gemini,    model: gemini-3.5-flash-lite,   max_tokens: 256  }
     fallback: { provider: groq,      model: llama-3.3-70b-versatile, max_tokens: 256  }
   planner:
-    primary:  { provider: gemini,    model: gemini-2.5-pro,          max_tokens: 1500 }
+    primary:  { provider: gemini,    model: gemini-3.5-flash,        max_tokens: 1500 }
     fallback: { provider: groq,      model: llama-3.3-70b-versatile, max_tokens: 1500 }
   summarizer:
-    primary:  { provider: gemini,    model: gemini-2.5-pro,          max_tokens: 1500 }
+    primary:  { provider: gemini,    model: gemini-3.5-flash,        max_tokens: 1500 }
     fallback: { provider: deepseek,  model: deepseek-chat,           max_tokens: 1500 }
   judge:
-    primary:  { provider: gemini,    model: gemini-2.5-flash,        max_tokens: 800  }
+    primary:  { provider: gemini,    model: gemini-3.5-flash-lite,   max_tokens: 800  }
     fallback: { provider: groq,      model: llama-3.3-70b-versatile, max_tokens: 800  }
   escalate:
     primary:  { provider: deepseek,  model: deepseek-reasoner,       max_tokens: 2000 }
-    fallback: { provider: gemini,    model: gemini-2.5-pro,          max_tokens: 2000 }
+    fallback: { provider: gemini,    model: gemini-3.5-flash,        max_tokens: 2000 }
 
 budgets:
   per_request_usd: 0.05       # POC; usually $0 on free tier

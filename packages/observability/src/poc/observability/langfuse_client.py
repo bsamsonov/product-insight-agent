@@ -100,6 +100,11 @@ def set_trace_attributes(
         span.set_attribute("langfuse.trace.output", _to_str(output))
 
 
+def in_active_trace() -> bool:
+    """True when called inside an already-open span (i.e. a new span would be a child)."""
+    return trace.get_current_span().get_span_context().is_valid
+
+
 def current_trace_id() -> str | None:
     """Hex trace id of the active OTel span — the same id Langfuse shows in its UI."""
     ctx = trace.get_current_span().get_span_context()

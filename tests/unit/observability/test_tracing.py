@@ -353,6 +353,12 @@ class TestLangfuseClient:
             expected = format(span.get_span_context().trace_id, "032x")
             assert langfuse_client.current_trace_id() == expected
 
+    def test_in_active_trace(self):
+        provider, _ = _make_provider()
+        assert langfuse_client.in_active_trace() is False
+        with provider.get_tracer("t").start_as_current_span("root"):
+            assert langfuse_client.in_active_trace() is True
+
     def test_set_trace_attributes(self):
         provider, exporter = _make_provider()
         with provider.get_tracer("t").start_as_current_span("root") as span:

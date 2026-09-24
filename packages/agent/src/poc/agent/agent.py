@@ -100,6 +100,9 @@ class ProductInsightAgent:
         # Root span: makes every node span (agent.intent…judge) a child of one trace
         # instead of N detached traces. Langfuse then renders a single request tree.
         tracer = get_tracer()
+        # When a caller already opened the trace (e.g. run_eval's `eval.case`), keep its
+        # trace-level name/input/output and only contribute tags, user and scores.
+        is_root = not langfuse_client.in_active_trace()
         # request_budget opens the request-scoped cost context (contextvars, S3.T4):
         # RoutedLLM charges every call against it, giving per-request budget caps
         # and an authoritative per-request cost total.
@@ -107,10 +110,10 @@ class ProductInsightAgent:
             span.set_attribute("tenant", tenant)
             langfuse_client.set_trace_attributes(
                 span,
-                name="agent.run",
+                name="agent.run" if is_root else None,
                 user_id=tenant,
                 session_id=thread_id,
-                input={"question": question, "filters": filters or {}},
+                input={"question": question, "filters": filters or {}} if is_root else None,
             )
             result: AgentState = await self._graph.ainvoke(state, config=config)
             span.set_attribute("intent", result.get("intent", ""))
@@ -119,7 +122,9 @@ class ProductInsightAgent:
             langfuse_client.set_trace_attributes(
                 span,
                 tags=[t for t in ("agent", result.get("intent")) if t],
-                output=final.text if final is not None else result.get("draft"),
+                output=(final.text if final is not None else result.get("draft"))
+                if is_root
+                else None,
             )
             _score_judgement(result.get("judgement") or {})
             return result

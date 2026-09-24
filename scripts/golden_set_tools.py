@@ -15,6 +15,9 @@ exactly the ids the indexer puts into Qdrant.
 
 Commands
 --------
+Every command accepts ``--corpus PATH`` (default ``data/raw/reviews.jsonl``). Use
+``--corpus data/raw/sample_reviews.jsonl`` to work against the bundled synthetic sample.
+
     uv run python scripts/golden_set_tools.py products [--top N] [--min-reviews K]
         List candidate products (most reviews first) with category, review count
         and the most frequent content words — your menu for questions + substrings.
@@ -64,6 +67,11 @@ _STOP_WORDS = (
 _STOP = set(_STOP_WORDS.split())
 
 _WORD = re.compile(r"[a-z][a-z'-]{2,}")
+
+
+def _set_corpus(path: Path) -> None:
+    global _REVIEWS
+    _REVIEWS = path if path.is_absolute() else _PROJECT_ROOT / path
 
 
 def _iter_reviews() -> list[dict]:
@@ -348,6 +356,10 @@ def main() -> None:
     if not args:
         print(__doc__)
         sys.exit(1)
+    if "--corpus" in args:
+        i = args.index("--corpus")
+        _set_corpus(Path(args[i + 1]))
+        del args[i : i + 2]
     cmd, rest = args[0], args[1:]
     if cmd == "products":
         top = int(_opt(rest, "--top", "30"))

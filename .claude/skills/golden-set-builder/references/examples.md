@@ -5,7 +5,7 @@ shows the command that produced the grounded material, then the resulting JSONL 
 
 ## Example 1 — single-product, product feature
 
-`uv run python poc_main/scripts/golden_set_tools.py product B0BYFLBC89` →
+`uv run python scripts/golden_set_tools.py product B0BYFLBC89` →
 title "Reaction Tackle Braided Fishing Line", 60 reviews, frequent words include
 `line, fishing, strong, braid, casting, knots, value`, and 60 chunk ids `B0BYFLBC89__0__c0 … __59__c0`.
 
@@ -17,7 +17,7 @@ are exactly this product's chunks, so any correct citation lands inside them.
 
 ## Example 2 — single-product, complaint / issue
 
-`uv run python poc_main/scripts/golden_set_tools.py product B07D8CTXS7` → GSI camping percolator,
+`uv run python scripts/golden_set_tools.py product B07D8CTXS7` → GSI camping percolator,
 frequent words include `coffee, pot, percolator, lid, flimsy, plastic`.
 
 ```json
@@ -28,7 +28,7 @@ exists in the corpus. Never assert a complaint the words don't support.
 
 ## Example 3 — single-product, fit/sizing (apparel)
 
-`uv run python poc_main/scripts/golden_set_tools.py product B08R8PZX6D` → NFL jogger sweatpants,
+`uv run python scripts/golden_set_tools.py product B08R8PZX6D` → NFL jogger sweatpants,
 frequent words `fit, size, pants, comfy, comfortable, small`.
 
 ```json
@@ -37,7 +37,7 @@ frequent words `fit, size, pants, comfy, comfortable, small`.
 
 ## Example 4 — cross-product theme
 
-`uv run python poc_main/scripts/golden_set_tools.py terms B0BYFLBC89 B010LSTBWI` (two braided fishing
+`uv run python scripts/golden_set_tools.py terms B0BYFLBC89 B010LSTBWI` (two braided fishing
 lines) → shared words `line, braid, strong, casting, knots`.
 
 ```json

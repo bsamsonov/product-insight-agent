@@ -14,6 +14,7 @@ from qdrant_client.http.models import (
     Filter,
     MatchValue,
     PointStruct,
+    Range,
     VectorParams,
 )
 
@@ -116,11 +117,7 @@ class QdrantIndex:
 
         qdrant_filter = None
         if filters:
-            conditions = [
-                FieldCondition(key=k, match=MatchValue(value=v))
-                for k, v in filters.items()
-                if v is not None
-            ]
+            conditions = [_condition(k, v) for k, v in filters.items() if v is not None]
             if conditions:
                 qdrant_filter = Filter(must=conditions)
 
@@ -176,3 +173,15 @@ class QdrantIndex:
 
 def _is_scalar(v: Any) -> bool:
     return isinstance(v, (str, int, float, bool)) or v is None
+
+
+def _condition(key: str, value: Any) -> FieldCondition:
+    """Payload condition for one plan filter.
+
+    ``MatchValue`` only takes str / int / bool, but the planner emits JSON numbers such as
+    ``rating: 2.0``; floats (and ints, for payloads stored as floats) become a closed
+    ``Range`` so the filter matches instead of raising a validation error.
+    """
+    if isinstance(value, float | int) and not isinstance(value, bool):
+        return FieldCondition(key=key, range=Range(gte=float(value), lte=float(value)))
+    return FieldCondition(key=key, match=MatchValue(value=value))

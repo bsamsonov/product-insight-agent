@@ -71,7 +71,12 @@ class HybridRetriever:
         filters: dict[str, Any] | None = None,
     ) -> list[ScoredChunk]:
         bm25_hits = self._bm25.search(query, top_k=self._bm25_k)
-        dense_hits = self._qdrant.search(query, top_k=self._dense_k, filters=filters)
+        try:
+            dense_hits = self._qdrant.search(query, top_k=self._dense_k, filters=filters)
+        except Exception as exc:
+            # A bad filter or an unreachable Qdrant must not also discard the BM25 hits.
+            _log.warning("Dense search failed (%s); continuing with BM25 only", exc)
+            dense_hits = []
 
         merged = _reciprocal_rank_fusion(bm25_hits, dense_hits)
         reranked = self._reranker.rerank(query, merged, top_k=top_k)

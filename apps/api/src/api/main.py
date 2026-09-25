@@ -92,47 +92,55 @@ def _build_router() -> Any | None:
     return RoutedLLM(cache=cache, budget_guard=guard)
 
 
-def _build_agent(provider: Any, router: Any | None = None) -> Any | None:
-    """Build a ProductInsightAgent backed by a BM25-first HybridRetriever.
+def _env_flag(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    return default if value is None else value.strip().lower() not in {"0", "false", "no", "off"}
 
-    Graceful degradation, mirroring scripts/run_eval.py: if Qdrant or the reranker
-    models are unavailable we fall back to BM25-only / NoOp so the API still serves
-    /ask through the full LangGraph pipeline (intent…judge) without external infra.
-    Returns None if even BM25 can't be built — caller then uses the direct-LLM path.
+
+def _corpus_path() -> Path | None:
+    """Corpus for BM25: POC_CORPUS_PATH, else the full dataset, else the bundled sample."""
+    override = os.getenv("POC_CORPUS_PATH")
+    candidates = (
+        [Path(override)]
+        if override
+        else [
+            _PROJECT_ROOT / "data" / "raw" / "reviews.jsonl",
+            _PROJECT_ROOT / "data" / "raw" / "sample_reviews.jsonl",
+        ]
+    )
+    for path in candidates:
+        path = path if path.is_absolute() else _PROJECT_ROOT / path
+        if path.exists():
+            return path
+    return None
+
+
+def _build_agent(provider: Any, router: Any | None = None) -> Any | None:
+    """Build a ProductInsightAgent on the shared hybrid retriever.
+
+    Graceful degradation, identical to scripts/run_eval.py (both use
+    :func:`poc.retrieval.factory.build_hybrid_retriever`): dense search is used when
+    Qdrant holds the tenant collection, otherwise BM25-only. Returns None when no corpus
+    is found — the caller then uses the direct-LLM path.
     """
     try:
         from poc.agent.agent import ProductInsightAgent
-        from poc.ingestion.chunker import RecursiveTokenChunker
-        from poc.ingestion.normalizer import normalize
-        from poc.ingestion.sources.jsonl import JsonlSource
-        from poc.retrieval.bm25 import BM25Index
-        from poc.retrieval.hybrid import HybridRetriever
-        from poc.retrieval.reranker import NoOpReranker
+        from poc.retrieval.factory import build_hybrid_retriever
 
-        reviews_path = _PROJECT_ROOT / "data" / "raw" / "reviews.jsonl"
-        if not reviews_path.exists():
-            _log.warning("reviews.jsonl not found at %s — /ask uses direct LLM path", reviews_path)
+        corpus = _corpus_path()
+        if corpus is None:
+            _log.warning("No corpus found under data/raw — /ask uses direct LLM path")
             return None
 
-        bm25 = BM25Index()
-        chunker = RecursiveTokenChunker()
-        chunks: list[Any] = []
-        for i, raw_doc in enumerate(JsonlSource(reviews_path).iter()):
-            if i >= 2000:
-                break
-            chunks.extend(chunker.chunk(normalize(raw_doc)))
-        bm25.build(chunks)
-
-        class _NoOpQdrant:
-            def search(self, *args: Any, **kwargs: Any) -> list:
-                return []
-
-        retriever = HybridRetriever(
-            qdrant_index=_NoOpQdrant(),
-            bm25_index=bm25,
-            reranker=NoOpReranker(),
+        retriever, info = build_hybrid_retriever(
+            corpus,
+            qdrant_url=os.getenv("POC_QDRANT_URL", "http://localhost:6333"),
+            tenant="default",
+            use_dense=_env_flag("POC_DENSE_RETRIEVAL"),
+            use_reranker=_env_flag("POC_RERANKER"),
         )
-        _log.info("Agent pipeline ready: BM25 index with %d chunks", len(bm25))
+        _state["retriever_info"] = info
+        _log.info("Agent pipeline ready on %s: %s", corpus.name, info)
         return ProductInsightAgent(llm=provider, retriever=retriever, router=router)
     except Exception as exc:
         _log.warning("Agent pipeline unavailable (%s) — /ask uses direct LLM path", exc)

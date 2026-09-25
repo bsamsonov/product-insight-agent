@@ -191,17 +191,11 @@ async def _run_eval(
         context_recall as ctx_recall,
     )
     from poc.evals.runner import EvalResult, _check_substrings, load_eval_cases
-    from poc.ingestion.chunker import RecursiveTokenChunker
-    from poc.ingestion.normalizer import normalize
-    from poc.ingestion.sources.jsonl import JsonlSource
     from poc.llm.openai_compatible import OpenAICompatibleProvider
     from poc.observability import langfuse_client
     from poc.observability.tracing import configure as configure_tracing
     from poc.observability.tracing import get_tracer
-    from poc.retrieval.bm25 import BM25Index
-    from poc.retrieval.hybrid import HybridRetriever
-    from poc.retrieval.qdrant_index import QdrantIndex
-    from poc.retrieval.reranker import CrossEncoderReranker, NoOpReranker
+    from poc.retrieval.factory import build_hybrid_retriever
 
     # Validate metric names
     unknown = set(metric_names) - _ALL_METRICS
@@ -230,49 +224,15 @@ async def _run_eval(
     else:
         typer.echo(f"Running {len(cases)} eval cases with metrics: {metric_names}")
 
-    bm25 = BM25Index()
-    reviews_path = data_path
-
-    if reviews_path.exists():
-        typer.echo("Loading documents into BM25 index...")
-        chunker = RecursiveTokenChunker()
-        all_chunks = []
-        for i, raw_doc in enumerate(JsonlSource(reviews_path).iter()):
-            if bm25_limit is not None and i >= bm25_limit:
-                break
-            doc = normalize(raw_doc)
-            all_chunks.extend(chunker.chunk(doc))
-        bm25.build(all_chunks)
-        typer.echo(f"BM25 index: {len(bm25)} chunks")
-    else:
-        typer.echo("No reviews.jsonl found, eval will have no context.")
-
-    try:
-        from poc.retrieval.bge_embedder import BgeM3Embedder
-
-        embedder = BgeM3Embedder()
-        qdrant_index = QdrantIndex(embedder=embedder, qdrant_url=qdrant_url, tenant=tenant)
-        typer.echo("Qdrant connected.")
-    except Exception as e:
-        typer.echo(f"Qdrant unavailable ({e}), using BM25-only retrieval.")
-
-        class _NoOpQdrant:
-            def search(self, *args, **kwargs):
-                return []
-
-        qdrant_index = _NoOpQdrant()
-
-    try:
-        reranker = CrossEncoderReranker()
-        typer.echo("CrossEncoderReranker loaded.")
-    except Exception as e:
-        typer.echo(f"CrossEncoderReranker unavailable ({e}), falling back to NoOpReranker.")
-        reranker = NoOpReranker()
-    retriever = HybridRetriever(
-        qdrant_index=qdrant_index,
-        bm25_index=bm25,
-        reranker=reranker,
+    typer.echo(f"Building retriever over {data_path}...")
+    retriever, retriever_info = build_hybrid_retriever(
+        data_path, qdrant_url=qdrant_url, tenant=tenant, bm25_limit=bm25_limit
     )
+    typer.echo(
+        f"Retriever: {retriever_info.mode} (bm25={retriever_info.bm25_chunks} chunks, "
+        f"dense={retriever_info.dense_points} points, reranker={retriever_info.reranker})"
+    )
+    has_context = retriever_info.bm25_chunks > 0
 
     if retrieval_only:
         await _run_retrieval_only(
@@ -330,7 +290,7 @@ async def _run_eval(
                 cited_ids = [c.chunk_id for c in answer.citations]
 
                 context_texts: list[str] = []
-                if bm25._chunks and active_llm_metrics:
+                if has_context and active_llm_metrics:
                     retrieved = retriever.retrieve(case.question, top_k=5)
                     context_texts = [sc.chunk.text for sc in retrieved]
 

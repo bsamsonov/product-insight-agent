@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
 from pathlib import Path
 
+from poc.agent.citations import cited_chunk_ids
 from poc.core.models import Answer, Citation, Question
 from poc.llm.provider import LLMMessage, LLMProvider
 from poc.retrieval.hybrid import HybridRetriever
@@ -13,7 +13,6 @@ from poc.retrieval.qdrant_index import ScoredChunk
 _log = logging.getLogger(__name__)
 
 # Matches citation markers like [chunk_42__c3] in answers
-_CITATION_RE = re.compile(r"\[([^\]]+)\]")
 
 
 def _format_context(chunks: list[ScoredChunk]) -> str:
@@ -25,12 +24,9 @@ def _format_context(chunks: list[ScoredChunk]) -> str:
 
 def _extract_citations(answer_text: str, chunks: list[ScoredChunk]) -> list[Citation]:
     chunk_map = {sc.chunk.id: sc for sc in chunks}
-    cited_ids = _CITATION_RE.findall(answer_text)
-    seen: set[str] = set()
     citations: list[Citation] = []
-    for cid in cited_ids:
-        if cid in chunk_map and cid not in seen:
-            seen.add(cid)
+    for cid in cited_chunk_ids(answer_text):
+        if cid in chunk_map:
             sc = chunk_map[cid]
             citations.append(
                 Citation(

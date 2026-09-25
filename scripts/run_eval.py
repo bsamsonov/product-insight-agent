@@ -88,6 +88,9 @@ def main(
         help="Path to the corpus JSONL used to build the BM25 index",
     ),
     limit: int | None = typer.Option(None, help="Max eval cases to run"),
+    label: str | None = typer.Option(
+        None, "--label", help="Human-readable run name stored in the report (table column)"
+    ),
     bm25_limit: int | None = typer.Option(
         None,
         "--bm25-limit",
@@ -161,6 +164,7 @@ def main(
             data_path=resolved_data_path,
             limit=limit,
             bm25_limit=bm25_limit,
+            label=label,
             run_judge=judge,
             use_agent=use_agent,
             metric_names=[m.strip() for m in metrics.split(",") if m.strip()],
@@ -182,6 +186,7 @@ async def _run_eval(
     data_path: Path,
     limit: int | None,
     bm25_limit: int | None,
+    label: str | None,
     run_judge: bool,
     use_agent: bool,
     metric_names: list[str],
@@ -452,6 +457,7 @@ async def _run_eval(
 
     report = {
         "timestamp": timestamp,
+        "label": label,
         "golden_set": golden_set_name,
         "pipeline": "agent" if use_agent else "baseline",
         "metrics_summary": metrics_summary,

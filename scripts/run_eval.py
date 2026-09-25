@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,7 +14,7 @@ from typing import TYPE_CHECKING
 import typer
 
 if TYPE_CHECKING:
-    from poc.evals.runner import EvalCase
+    from poc.evals.runner import EvalCase, EvalResult
     from poc.retrieval.hybrid import HybridRetriever
 
 app = typer.Typer(help="Run baseline RAG evaluation.")
@@ -26,6 +28,26 @@ _DEFAULT_DOCS_EVALS = _PROJECT_ROOT / "docs" / "evals"
 _NON_LLM_METRICS = {"citation_precision", "groundedness_heuristic"}
 _LLM_METRICS = {"faithfulness", "answer_relevance", "context_precision", "context_recall"}
 _ALL_METRICS = _NON_LLM_METRICS | _LLM_METRICS
+
+
+def latency_cost_summary(results: list[EvalResult]) -> dict[str, float | int]:
+    """p50/p95 answer latency and per-answer cost over the successful cases."""
+    ok = [r for r in results if not r.error]
+    latencies = sorted(r.latency_ms for r in ok)
+    costs = [r.cost_usd for r in ok if r.cost_usd is not None]
+
+    def pct(q: float) -> int:
+        if not latencies:
+            return 0
+        # nearest-rank percentile
+        return latencies[max(0, math.ceil(q * len(latencies)) - 1)]
+
+    return {
+        "latency_p50_ms": pct(0.50),
+        "latency_p95_ms": pct(0.95),
+        "mean_cost_usd": round(sum(costs) / len(costs), 6) if costs else 0.0,
+        "total_cost_usd": round(sum(costs), 6),
+    }
 
 
 @app.command()
@@ -295,6 +317,7 @@ async def _run_eval(
                 input={"case_id": case.id, "question": case.question},
             )
             try:
+                t0 = time.monotonic()
                 if use_agent:
                     answer = await pipeline.get_answer(
                         case.question, tenant=tenant, filters=case.filters or None
@@ -302,6 +325,8 @@ async def _run_eval(
                 else:
                     q = Question(text=case.question, filters=case.filters)
                     answer = await pipeline.answer(q)
+                # Wall-clock answer latency (retrieval + all LLM calls), excluding metrics.
+                answer_latency_ms = int((time.monotonic() - t0) * 1000)
                 cited_ids = [c.chunk_id for c in answer.citations]
 
                 context_texts: list[str] = []
@@ -359,7 +384,7 @@ async def _run_eval(
                     faithfulness_score=case_scores.get("faithfulness", 0.0),
                     citation_precision_score=case_scores.get("citation_precision", 0.0),
                     substring_match=substr_match,
-                    latency_ms=answer.latency_ms,
+                    latency_ms=answer_latency_ms,
                     cost_usd=answer.cost_usd,
                 )
                 # Attach extended scores for output
@@ -418,6 +443,7 @@ async def _run_eval(
             "retrieved_count": getattr(r, "_retrieved_count", 0),
             "substring_match": r.substring_match,
             "latency_ms": r.latency_ms,
+            "cost_usd": r.cost_usd,
             "error": r.error,
         }
         for r in results
@@ -435,7 +461,10 @@ async def _run_eval(
             "total_cases": n,
             "errors": errors,
             "substring_match_rate": round(substr_rate, 4),
+            **latency_cost_summary(results),
         },
+        "provider": provider,
+        "model": model,
         "per_case": per_case,
     }
 
@@ -445,6 +474,11 @@ async def _run_eval(
     typer.echo(f"Total cases:         {n}")
     typer.echo(f"Errors:              {errors}")
     typer.echo(f"Substring match:     {substr_rate:.4f}")
+    lc = report["summary"]
+    typer.echo(f"Latency p50/p95 ms:  {lc['latency_p50_ms']} / {lc['latency_p95_ms']}")
+    typer.echo(
+        f"Cost per answer:     ${lc['mean_cost_usd']:.5f} (total ${lc['total_cost_usd']:.4f})"
+    )
     for m_name, stats in metrics_summary.items():
         typer.echo(
             f"{m_name}: mean={stats['mean']:.4f} min={stats['min']:.4f} max={stats['max']:.4f}"

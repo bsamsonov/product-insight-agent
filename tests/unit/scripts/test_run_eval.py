@@ -18,7 +18,12 @@ _SCRIPTS_DIR = Path(__file__).parents[3] / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from poc.evals.runner import EvalCase  # noqa: E402
-from run_eval import _run_retrieval_only, compute_hit, latency_cost_summary  # noqa: E402
+from run_eval import (  # noqa: E402
+    _record_llm_metric,
+    _run_retrieval_only,
+    compute_hit,
+    latency_cost_summary,
+)
 
 
 @dataclass
@@ -174,3 +179,16 @@ def test_latency_cost_summary_empty():
         "mean_cost_usd": 0.0,
         "total_cost_usd": 0.0,
     }
+
+
+def test_failed_llm_metric_is_counted_not_scored():
+    from poc.evals.metrics import MetricResult
+
+    scores: dict[str, float] = {}
+    failures: dict[str, int] = {}
+    ok = MetricResult(name="faithfulness", score=0.9, reasoning="fine")
+    bad = MetricResult(name="faithfulness", score=0.0, reasoning="eval error: Rate limit")
+    _record_llm_metric(scores, failures, "faithfulness", ok)
+    _record_llm_metric(scores, failures, "answer_relevance", bad)
+    assert scores == {"faithfulness": 0.9}
+    assert failures == {"answer_relevance": 1}

@@ -30,6 +30,17 @@ _LLM_METRICS = {"faithfulness", "answer_relevance", "context_precision", "contex
 _ALL_METRICS = _NON_LLM_METRICS | _LLM_METRICS
 
 
+def _record_llm_metric(
+    case_scores: dict[str, float], failures: dict[str, int], name: str, result: object
+) -> None:
+    """Store an LLM metric score, or count it as a failure if the judge call errored."""
+    reasoning = str(getattr(result, "reasoning", ""))
+    if reasoning.startswith("eval error"):
+        failures[name] = failures.get(name, 0) + 1
+        return
+    case_scores[name] = float(getattr(result, "score", 0.0))
+
+
 def latency_cost_summary(results: list[EvalResult]) -> dict[str, float | int]:
     """p50/p95 answer latency and per-answer cost over the successful cases."""
     ok = [r for r in results if not r.error]
@@ -261,6 +272,9 @@ async def _run_eval(
     results: list[EvalResult] = []
     # Per-metric accumulators: metric_name -> list[float]
     metric_accumulator: dict[str, list[float]] = {m: [] for m in metric_names}
+    # LLM metric calls that errored (rate limit, bad JSON …): excluded from the means and
+    # counted separately, instead of silently scoring 0.
+    metric_failures: dict[str, int] = {}
     substring_matches: list[bool] = []
 
     for i, case in enumerate(cases):
@@ -308,18 +322,20 @@ async def _run_eval(
                 if "faithfulness" in metric_names and (run_judge or "faithfulness" in metric_names):
                     if context_texts:
                         faith = await faithfulness(answer.text, context_texts, llm, model=model)
-                        case_scores["faithfulness"] = faith.score
+                        _record_llm_metric(case_scores, metric_failures, "faithfulness", faith)
                     else:
                         case_scores["faithfulness"] = 0.0
 
                 if "answer_relevance" in metric_names:
                     ar = await answer_relevance(case.question, answer.text, llm, model=model)
-                    case_scores["answer_relevance"] = ar.score
+                    _record_llm_metric(case_scores, metric_failures, "answer_relevance", ar)
 
                 if "context_precision" in metric_names:
                     if context_texts:
                         cp_llm = await ctx_precision(case.question, context_texts, llm, model=model)
-                        case_scores["context_precision"] = cp_llm.score
+                        _record_llm_metric(
+                            case_scores, metric_failures, "context_precision", cp_llm
+                        )
                     else:
                         case_scores["context_precision"] = 1.0
 
@@ -329,7 +345,7 @@ async def _run_eval(
                         cr = await ctx_recall(
                             answer.text, expected_answer, context_texts, llm, model=model
                         )
-                        case_scores["context_recall"] = cr.score
+                        _record_llm_metric(case_scores, metric_failures, "context_recall", cr)
                     else:
                         case_scores["context_recall"] = 1.0 if not expected_answer else 0.0
 
@@ -420,6 +436,7 @@ async def _run_eval(
         "summary": {
             "total_cases": n,
             "errors": errors,
+            "metric_failures": metric_failures,
             "substring_match_rate": round(substr_rate, 4),
             **latency_cost_summary(results),
         },
@@ -433,6 +450,8 @@ async def _run_eval(
     typer.echo("\n=== Eval Report ===")
     typer.echo(f"Total cases:         {n}")
     typer.echo(f"Errors:              {errors}")
+    if metric_failures:
+        typer.echo(f"Metric failures:     {metric_failures} (excluded from means)")
     typer.echo(f"Substring match:     {substr_rate:.4f}")
     lc = report["summary"]
     typer.echo(f"Latency p50/p95 ms:  {lc['latency_p50_ms']} / {lc['latency_p95_ms']}")

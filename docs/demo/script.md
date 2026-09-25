@@ -65,11 +65,14 @@ Show: GitHub Actions CI run or terminal
 Run:
 ```bash
 uv run python scripts/run_eval.py \
-  --golden-set packages/evals/data/golden_set_v1.jsonl \
-  --metrics citation_precision,groundedness_heuristic
+  --golden-set golden_set_v2 --data-path data/raw/reviews.jsonl --agent \
+  --metrics citation_precision,groundedness_heuristic,faithfulness
 ```
 
-Say: "80 test cases, 10 adversarial. Citation precision and groundedness metrics. Any PR that regresses by more than 5% is blocked by the CI gate."
+Say: "35 cases, each anchored to a real product, with expected substrings and chunk ids
+checked against the corpus by a validator. Every PR runs a keyless retrieval gate on the
+bundled sample (hit rate ≥ 0.8); the LLM-judge run is a manual workflow. Results:
+docs/evals/."
 
 ---
 

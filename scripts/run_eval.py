@@ -20,7 +20,7 @@ _log = logging.getLogger(__name__)
 
 _SCRIPTS_DIR = Path(__file__).parent
 _PROJECT_ROOT = _SCRIPTS_DIR.parent
-_DEFAULT_EVAL_SET = _PROJECT_ROOT / "packages" / "evals" / "data" / "golden_set_v2_short.jsonl"
+_DEFAULT_EVAL_SET = _PROJECT_ROOT / "packages" / "evals" / "data" / "golden_set_v2.jsonl"
 _DEFAULT_DOCS_EVALS = _PROJECT_ROOT / "docs" / "evals"
 
 _NON_LLM_METRICS = {"citation_precision", "groundedness_heuristic"}
@@ -94,7 +94,7 @@ def main(
 ) -> None:
     logging.basicConfig(level=logging.WARNING)
 
-    # Resolve short name to full path (e.g. "golden_set_v0" → .../data/golden_set_v0.jsonl)
+    # Resolve short name to full path (e.g. "golden_set_v2" → .../data/golden_set_v2.jsonl)
     if not eval_set.exists() and not eval_set.suffix:
         eval_set = _PROJECT_ROOT / "packages" / "evals" / "data" / f"{eval_set.name}.jsonl"
 
@@ -103,7 +103,7 @@ def main(
     if resolved_output is None:
         _DEFAULT_DOCS_EVALS.mkdir(parents=True, exist_ok=True)
         date_str = datetime.now(UTC).strftime("%Y%m%d")
-        set_name = eval_set.stem  # e.g. "golden_set_v1"
+        set_name = eval_set.stem  # e.g. "golden_set_v2"
         resolved_output = _DEFAULT_DOCS_EVALS / f"{date_str}_{set_name}.json"
 
     # Resolve provider/model: single source of default is LLMSettings.default_provider

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from poc.agent.graph import build_graph, initial_state
@@ -13,6 +14,17 @@ from poc.observability.tracing import get_tracer
 from poc.retrieval.hybrid import HybridRetriever
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AgentResult:
+    """The answer plus the quality signals the graph computed for it."""
+
+    answer: Answer
+    intent: str | None = None
+    judge_score: float | None = None
+    groundedness: float | None = None
+    needs_human_review: bool = False
 
 
 class ProductInsightAgent:
@@ -156,14 +168,29 @@ class ProductInsightAgent:
         Asynchronously retrieves the final answer, or constructs a fallback answer based
         on the draft state, for the given question and optional filtering criteria.
         """
+        return (await self.ask(question, tenant=tenant, filters=filters)).answer
+
+    async def ask(
+        self,
+        question: str,
+        *,
+        tenant: str = "default",
+        filters: dict[str, Any] | None = None,
+    ) -> AgentResult:
+        """Run the graph and return the answer with judge score, groundedness and HITL flag."""
         state = await self.run(question, tenant=tenant, filters=filters)
-        if state.get("final"):
-            return state["final"]
-        # Fallback: construct answer from draft
-        return Answer(
+        answer = state.get("final") or Answer(
             question=question,
             text=state.get("draft", "UNKNOWN: agent did not produce an answer."),
             cost_usd=state.get("cost_usd"),
+        )
+        judgement = state.get("judgement") or {}
+        return AgentResult(
+            answer=answer,
+            intent=state.get("intent"),
+            judge_score=_as_float(judgement.get("score")),
+            groundedness=_as_float(judgement.get("groundedness")),
+            needs_human_review=bool(state.get("needs_human_review", False)),
         )
 
 
@@ -177,3 +204,7 @@ def _score_judgement(judgement: dict[str, Any]) -> None:
     groundedness = judgement.get("groundedness")
     if isinstance(groundedness, int | float):
         langfuse_client.score_current_trace("groundedness", float(groundedness))
+
+
+def _as_float(value: Any) -> float | None:
+    return float(value) if isinstance(value, int | float) else None

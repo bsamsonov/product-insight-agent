@@ -207,6 +207,10 @@ class AskResponse(BaseModel):
     model: str = ""
     cost_usd: float | None = None
     latency_ms: int = 0
+    intent: str | None = None
+    judge_score: float | None = None
+    groundedness: float | None = None
+    needs_human_review: bool = False
 
 
 class HealthResponse(BaseModel):
@@ -263,7 +267,9 @@ async def ask(
             # opens the `agent.run` root span; each node is @traced (agent.intent…judge)
             # and every LLM call opens an `llm.generate` child span — so Langfuse renders
             # one trace per /ask with the node tree and per-generation tokens/cost.
-            answer = await agent.get_answer(sanitized_q, tenant=tenant, filters=req.filters or None)
+            result = await agent.ask(sanitized_q, tenant=tenant, filters=req.filters or None)
+            answer = result.answer
+            answer_model = answer.model or REGISTRY[_state["provider_name"]].default_model
             latency_ms = int(time.time() * 1000) - start_ms
 
             await audit.log(
@@ -272,7 +278,8 @@ async def ask(
                     tenant=tenant,
                     data={
                         "question": sanitized_q[:200],
-                        "model": answer.model,
+                        "model": answer_model,
+                        "needs_human_review": result.needs_human_review,
                         "cost_usd": answer.cost_usd,
                         "latency_ms": latency_ms,
                     },
@@ -282,9 +289,13 @@ async def ask(
             return AskResponse(
                 answer=answer.text,
                 citations=[c.model_dump() for c in answer.citations],
-                model=answer.model,
+                model=answer_model,
                 cost_usd=answer.cost_usd,
                 latency_ms=latency_ms,
+                intent=result.intent,
+                judge_score=result.judge_score,
+                groundedness=result.groundedness,
+                needs_human_review=result.needs_human_review,
             )
 
         # Fallback path: retrieval stack unavailable → single direct LLM call, still

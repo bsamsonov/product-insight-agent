@@ -29,12 +29,18 @@ for msg in st.session_state.messages:
         st.write(msg["content"])
         if msg["role"] == "assistant" and "metadata" in msg:
             meta = msg["metadata"]
+            if meta.get("needs_human_review"):
+                st.warning("Low confidence: flagged for human review (HITL).")
             with st.expander("Details"):
-                cols = st.columns(3)
+                cols = st.columns(5)
                 cols[0].metric("Model", meta.get("model", "—"))
                 cols[1].metric("Latency", f"{meta.get('latency_ms', 0)} ms")
                 cost = meta.get("cost_usd")
                 cols[2].metric("Cost", f"${cost:.6f}" if cost else "—")
+                judge = meta.get("judge_score")
+                cols[3].metric("Judge", f"{judge:.2f}" if judge is not None else "—")
+                grounded = meta.get("groundedness")
+                cols[4].metric("Groundedness", f"{grounded:.2f}" if grounded is not None else "—")
                 if meta.get("citations"):
                     st.write("**Citations:**", meta["citations"])
 
@@ -72,6 +78,9 @@ if question:
                 "latency_ms": data.get("latency_ms", 0),
                 "cost_usd": data.get("cost_usd"),
                 "citations": data.get("citations", []),
+                "judge_score": data.get("judge_score"),
+                "groundedness": data.get("groundedness"),
+                "needs_human_review": data.get("needs_human_review", False),
             }
 
             st.session_state.messages.append(

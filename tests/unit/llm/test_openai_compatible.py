@@ -190,6 +190,25 @@ async def test_client_error_is_not_retried(
     assert route.call_count == 1
 
 
+@respx.mock
+async def test_daily_quota_is_not_retried(
+    groq_provider: OpenAICompatibleProvider,
+) -> None:
+    route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            429,
+            json={"error": {"message": "quota GenerateRequestsPerDayPerProjectPerModel"}},
+        )
+    )
+    with pytest.raises(LLMRateLimitError):
+        await groq_provider.complete(
+            [LLMMessage(role="user", content="hi")],
+            model="llama-3.3-70b-versatile",
+            max_tokens=10,
+        )
+    assert route.call_count == 1
+
+
 # ------------------------------------------------------------------ structured output
 
 

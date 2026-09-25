@@ -268,4 +268,9 @@ class OpenAICompatibleProvider:
 def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, APITimeoutError):
         return True
-    return isinstance(exc, APIStatusError) and (exc.status_code == 429 or exc.status_code >= 500)
+    if not isinstance(exc, APIStatusError):
+        return False
+    if exc.status_code == 429:
+        # A per-day quota does not reset within any sensible backoff window.
+        return "PerDay" not in str(exc)
+    return exc.status_code >= 500

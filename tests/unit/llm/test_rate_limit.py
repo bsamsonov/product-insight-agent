@@ -29,3 +29,10 @@ async def test_limiter_spaces_calls():
     waits = [call.args[0] for call in asyncio.sleep.await_args_list]
     assert len(waits) == 3  # the first call goes straight through
     assert waits[-1] > waits[0] > 0.04
+
+
+async def test_pacing_meter_accumulates_waits_from_child_tasks():
+    limiter = rate_limit.RateLimiter(rpm=1200)  # 50 ms apart
+    meter = rate_limit.start_pacing_meter()
+    await asyncio.gather(*(asyncio.create_task(limiter.acquire()) for _ in range(3)))
+    assert meter[0] > 0.1  # waits of ~50 ms + ~100 ms recorded via child tasks

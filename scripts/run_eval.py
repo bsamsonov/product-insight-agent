@@ -203,6 +203,7 @@ async def _run_eval(
     )
     from poc.evals.runner import EvalResult, _check_substrings, load_eval_cases
     from poc.llm.openai_compatible import OpenAICompatibleProvider
+    from poc.llm.rate_limit import start_pacing_meter
     from poc.observability import langfuse_client
     from poc.observability.tracing import configure as configure_tracing
     from poc.observability.tracing import get_tracer
@@ -292,6 +293,9 @@ async def _run_eval(
             )
             try:
                 t0 = time.monotonic()
+                # Pacing waits (POC_<PROVIDER>_RPM) are client-side throttling, not
+                # pipeline latency — measure them and subtract.
+                pacing = start_pacing_meter()
                 if use_agent:
                     answer = await pipeline.get_answer(
                         case.question, tenant=tenant, filters=case.filters or None
@@ -299,8 +303,8 @@ async def _run_eval(
                 else:
                     q = Question(text=case.question, filters=case.filters)
                     answer = await pipeline.answer(q)
-                # Wall-clock answer latency (retrieval + all LLM calls), excluding metrics.
-                answer_latency_ms = int((time.monotonic() - t0) * 1000)
+                # Answer latency (retrieval + all LLM calls), excluding metrics and pacing waits.
+                answer_latency_ms = int((time.monotonic() - t0 - pacing[0]) * 1000)
                 cited_ids = [c.chunk_id for c in answer.citations]
 
                 context_texts: list[str] = []

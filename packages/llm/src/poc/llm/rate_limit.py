@@ -13,6 +13,18 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from contextvars import ContextVar
+
+# Seconds spent waiting for a pacing slot in the current request. Holds a mutable list so
+# waits recorded inside child tasks (LangGraph nodes) are visible to the caller.
+_pacing_wait: ContextVar[list[float] | None] = ContextVar("poc_llm_pacing_wait", default=None)
+
+
+def start_pacing_meter() -> list[float]:
+    """Start accumulating pacing waits for the current request; returns the meter."""
+    meter = [0.0]
+    _pacing_wait.set(meter)
+    return meter
 
 
 class RateLimiter:
@@ -29,6 +41,9 @@ class RateLimiter:
             wait = self._next_slot - now
             self._next_slot = max(now, self._next_slot) + self._interval
         if wait > 0:
+            meter = _pacing_wait.get()
+            if meter is not None:
+                meter[0] += wait
             await asyncio.sleep(wait)
 
 

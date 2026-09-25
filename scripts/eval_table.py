@@ -16,7 +16,7 @@ from pathlib import Path
 _METRIC_ROWS = [
     ("faithfulness", "Faithfulness (LLM judge)"),
     ("citation_precision", "Citation precision"),
-    ("groundedness_heuristic", "Groundedness (heuristic)"),
+    ("groundedness_heuristic", "Sentences with citations"),
     ("answer_relevance", "Answer relevance"),
     ("context_precision", "Context precision"),
     ("context_recall", "Context recall"),

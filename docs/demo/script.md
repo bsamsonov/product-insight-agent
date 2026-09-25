@@ -50,7 +50,7 @@ Say: "Blocked by guardrails — returns 400 with the violation reason."
 
 ## [3:30–4:15] Observability (45s)
 
-Show: Langfuse UI at localhost:3000
+Show: Langfuse UI at localhost:3000 (see docs/observability.md)
 
 Navigate: to the most recent trace
 

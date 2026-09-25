@@ -155,6 +155,41 @@ async def test_server_error_raises_llm_provider_error(
         )
 
 
+@respx.mock
+async def test_rate_limit_is_retried_until_success(
+    groq_provider: OpenAICompatibleProvider,
+) -> None:
+    route = respx.post("https://api.groq.com/openai/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(429, json={"error": {"message": "rate limit"}}),
+        httpx.Response(429, json={"error": {"message": "rate limit"}}),
+        httpx.Response(200, json=_chat_response("ok", "llama-3.3-70b-versatile")),
+    ]
+    resp = await groq_provider.complete(
+        [LLMMessage(role="user", content="hi")],
+        model="llama-3.3-70b-versatile",
+        max_tokens=10,
+    )
+    assert resp.content == "ok"
+    assert route.call_count == 3
+
+
+@respx.mock
+async def test_client_error_is_not_retried(
+    groq_provider: OpenAICompatibleProvider,
+) -> None:
+    route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        return_value=httpx.Response(400, json={"error": {"message": "bad request"}})
+    )
+    with pytest.raises(LLMProviderError):
+        await groq_provider.complete(
+            [LLMMessage(role="user", content="hi")],
+            model="llama-3.3-70b-versatile",
+            max_tokens=10,
+        )
+    assert route.call_count == 1
+
+
 # ------------------------------------------------------------------ structured output
 
 

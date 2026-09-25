@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -11,10 +12,11 @@ from openai.types.chat import ChatCompletion
 from poc.llm.errors import LLMProviderError, LLMRateLimitError, LLMTimeoutError
 from poc.llm.pricing import estimate_cost
 from poc.llm.provider import LLMMessage, LLMResponse
+from poc.llm.rate_limit import limiter_for
 from poc.llm.registry import REGISTRY
 from poc.observability.tracing import get_tracer, record_llm_call
 from pydantic import BaseModel
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 _log = logging.getLogger(__name__)
 
@@ -22,7 +24,10 @@ _log = logging.getLogger(__name__)
 class OpenAICompatibleProvider:
     def __init__(self, *, provider_name: str, base_url: str, api_key: str) -> None:
         self._provider_name = provider_name
-        self._client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+        # Retries are owned by _call_raw (one policy, visible backoff), not the SDK.
+        self._client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+        self._retry_attempts = int(os.getenv("POC_LLM_RETRY_ATTEMPTS", "6"))
+        self._retry_max_wait_s = float(os.getenv("POC_LLM_RETRY_MAX_WAIT_S", "60"))
 
     @classmethod
     def from_env(cls, name: str | None = None) -> OpenAICompatibleProvider:
@@ -42,15 +47,25 @@ class OpenAICompatibleProvider:
 
         return cls(provider_name=name, base_url=base_url, api_key=api_key)
 
-    # Tenacity retries raw openai SDK exceptions before we convert them to domain errors.
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type((APIStatusError, APITimeoutError)),
-        reraise=True,
-    )
     async def _call_raw(self, **kwargs: Any) -> ChatCompletion:
-        return await self._client.chat.completions.create(**kwargs)  # type: ignore[return-value]
+        """One chat completion with pacing and retries on 429 / 5xx / timeouts.
+
+        Client errors (400, 401, 404 …) are not retried: repeating them cannot succeed.
+        Backoff grows exponentially up to ``POC_LLM_RETRY_MAX_WAIT_S`` (default 60 s), long
+        enough for a per-minute quota window to reset.
+        """
+        limiter = limiter_for(self._provider_name)
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(self._retry_attempts),
+            wait=wait_exponential(multiplier=2, min=1, max=self._retry_max_wait_s),
+            retry=retry_if_exception(_is_retryable),
+            reraise=True,
+        ):
+            with attempt:
+                if limiter is not None:
+                    await limiter.acquire()
+                return await self._client.chat.completions.create(**kwargs)  # type: ignore[return-value]
+        raise AssertionError("unreachable")  # pragma: no cover
 
     async def complete(
         self,
@@ -248,3 +263,9 @@ class OpenAICompatibleProvider:
                     f"API error on JSON retry from {self._provider_name}"
                 ) from exc2
             return self._strip_json_fence(resp2.choices[0].message.content or "")
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, APITimeoutError):
+        return True
+    return isinstance(exc, APIStatusError) and (exc.status_code == 429 or exc.status_code >= 500)

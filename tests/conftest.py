@@ -8,3 +8,6 @@ import os
 
 os.environ.setdefault("POC_DENSE_RETRIEVAL", "0")
 os.environ.setdefault("POC_RERANKER", "0")
+
+# No real backoff sleeps in unit tests (retry logic still runs).
+os.environ.setdefault("POC_LLM_RETRY_MAX_WAIT_S", "0")

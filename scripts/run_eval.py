@@ -55,6 +55,11 @@ def main(
         help="Path to the corpus JSONL used to build the BM25 index",
     ),
     limit: int | None = typer.Option(None, help="Max eval cases to run"),
+    bm25_limit: int | None = typer.Option(
+        None,
+        "--bm25-limit",
+        help="Index only the first N corpus documents into BM25 (default: whole corpus)",
+    ),
     judge: bool = typer.Option(True, help="Run faithfulness LLM judge (legacy flag)"),
     use_agent: bool = typer.Option(
         False,
@@ -122,6 +127,7 @@ def main(
             baseline=baseline,
             data_path=resolved_data_path,
             limit=limit,
+            bm25_limit=bm25_limit,
             run_judge=judge,
             use_agent=use_agent,
             metric_names=[m.strip() for m in metrics.split(",") if m.strip()],
@@ -142,6 +148,7 @@ async def _run_eval(
     baseline: Path | None,
     data_path: Path,
     limit: int | None,
+    bm25_limit: int | None,
     run_judge: bool,
     use_agent: bool,
     metric_names: list[str],
@@ -209,7 +216,7 @@ async def _run_eval(
         chunker = RecursiveTokenChunker()
         all_chunks = []
         for i, raw_doc in enumerate(JsonlSource(reviews_path).iter()):
-            if i >= 2000:
+            if bm25_limit is not None and i >= bm25_limit:
                 break
             doc = normalize(raw_doc)
             all_chunks.extend(chunker.chunk(doc))

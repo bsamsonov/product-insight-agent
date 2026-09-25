@@ -179,9 +179,15 @@ class OpenAICompatibleProvider:
         self, kwargs: dict[str, Any], response_format: type[BaseModel]
     ) -> None:
         if self._provider_name == "gemini":
-            kwargs["extra_body"] = {
-                "response_mime_type": "application/json",
-                "response_schema": response_format.model_json_schema(),
+            # Gemini's OpenAI-compatible endpoint takes the standard structured-output
+            # shape; the native `response_mime_type`/`response_schema` fields are rejected
+            # there with HTTP 400.
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_format.__name__,
+                    "schema": response_format.model_json_schema(),
+                },
             }
         else:
             kwargs["response_format"] = {"type": "json_object"}

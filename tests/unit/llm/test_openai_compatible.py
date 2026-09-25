@@ -210,7 +210,7 @@ async def test_groq_structured_output_retry_on_invalid_json(
 
 
 @respx.mock
-async def test_gemini_structured_output_uses_extra_body(
+async def test_gemini_structured_output_uses_json_schema(
     gemini_provider: OpenAICompatibleProvider,
 ) -> None:
     captured: list[dict] = []
@@ -233,8 +233,12 @@ async def test_gemini_structured_output_uses_extra_body(
         response_format=_Answer,
     )
 
-    assert captured[0].get("response_mime_type") == "application/json"
-    assert "response_schema" in captured[0]
+    fmt = captured[0]["response_format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["name"] == "_Answer"
+    assert fmt["json_schema"]["schema"] == _Answer.model_json_schema()
+    # Native Gemini fields are rejected by the OpenAI-compatible endpoint (HTTP 400).
+    assert "response_mime_type" not in captured[0]
 
 
 # ------------------------------------------------------------------ pricing unit tests

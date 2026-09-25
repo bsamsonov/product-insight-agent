@@ -32,17 +32,20 @@ for msg in st.session_state.messages:
             if meta.get("needs_human_review"):
                 st.warning("Low confidence: flagged for human review (HITL).")
             with st.expander("Details"):
-                cols = st.columns(5)
-                cols[0].metric("Model", meta.get("model", "—"))
-                cols[1].metric("Latency", f"{meta.get('latency_ms', 0)} ms")
+                st.caption(f"Model: {meta.get('model') or '—'}")
+                cols = st.columns(4)
+                cols[0].metric("Latency", f"{meta.get('latency_ms', 0)} ms")
                 cost = meta.get("cost_usd")
-                cols[2].metric("Cost", f"${cost:.6f}" if cost else "—")
+                cols[1].metric("Cost", f"${cost:.4f}" if cost else "—")
                 judge = meta.get("judge_score")
-                cols[3].metric("Judge", f"{judge:.2f}" if judge is not None else "—")
+                cols[2].metric("Judge", f"{judge:.2f}" if judge is not None else "—")
                 grounded = meta.get("groundedness")
-                cols[4].metric("Groundedness", f"{grounded:.2f}" if grounded is not None else "—")
+                cols[3].metric("Groundedness", f"{grounded:.2f}" if grounded is not None else "—")
                 if meta.get("citations"):
-                    st.write("**Citations:**", meta["citations"])
+                    st.markdown("**Citations**")
+                    for c in meta["citations"]:
+                        excerpt = " ".join(str(c.get("text_excerpt", "")).split())[:160]
+                        st.markdown(f"- `{c.get('chunk_id')}` — {excerpt}")
 
 # Input
 question = st.chat_input("Ask about product reviews...")

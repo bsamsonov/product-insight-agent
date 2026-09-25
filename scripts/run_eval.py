@@ -257,7 +257,10 @@ async def _run_eval(
     if use_agent:
         from poc.agent.agent import ProductInsightAgent
 
-        pipeline = ProductInsightAgent(llm=llm, retriever=retriever)
+        # --model applies to every node, so a run is pinned to one model end to end.
+        pipeline = ProductInsightAgent(
+            llm=llm, retriever=retriever, fast_model=model, smart_model=model, judge_model=model
+        )
         typer.echo("Pipeline: ProductInsightAgent (LangGraph)")
     else:
         from poc.agent.rag_pipeline import RAGPipeline
@@ -274,6 +277,7 @@ async def _run_eval(
     # LLM metric calls that errored (rate limit, bad JSON …): excluded from the means and
     # counted separately, instead of silently scoring 0.
     metric_failures: dict[str, int] = {}
+    dead_streak = 0
     substring_matches: list[bool] = []
 
     for i, case in enumerate(cases):
@@ -396,6 +400,19 @@ async def _run_eval(
             )
 
         results.append(result)
+
+        # Nodes and metrics fail soft, so an exhausted quota would otherwise produce a
+        # full report of fallback answers. Stop once three cases in a row lost every
+        # LLM metric.
+        requested_llm = [m for m in metric_names if m in _LLM_METRICS]
+        scored_llm = [m for m in requested_llm if m in getattr(result, "_scores", {})]
+        dead_streak = dead_streak + 1 if requested_llm and not scored_llm else 0
+        if dead_streak >= 3:
+            typer.echo(
+                "ABORT: 3 consecutive cases lost every LLM metric (quota or provider down).",
+                err=True,
+            )
+            raise typer.Exit(code=2)
         substring_matches.append(result.substring_match)
         for m_name in metric_names:
             score_val = getattr(result, "_scores", {}).get(m_name)

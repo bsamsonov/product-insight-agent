@@ -215,8 +215,6 @@ async def _run_eval(
         typer.echo(f"WARNING: unknown metrics (will skip): {unknown}", err=True)
         metric_names = [m for m in metric_names if m in _ALL_METRICS]
 
-    active_llm_metrics = set(metric_names) & _LLM_METRICS
-
     # Initialise OpenTelemetry -> Langfuse export. The API app calls this at startup,
     # but this CLI does not go through it, so without this the get_tracer()/span calls
     # in the LLM and agent layers use the global no-op provider and export nothing.
@@ -307,8 +305,11 @@ async def _run_eval(
                 answer_latency_ms = int((time.monotonic() - t0 - pacing[0]) * 1000)
                 cited_ids = [c.chunk_id for c in answer.citations]
 
-                context_texts: list[str] = []
-                if has_context and active_llm_metrics:
+                # Judge the answer against the chunks the pipeline actually used (after
+                # plan filters and reranking); fall back to a fresh top-5 retrieval only
+                # when the pipeline reports none.
+                context_texts: list[str] = retriever.chunk_texts(answer.used_chunks)
+                if not context_texts and has_context:
                     retrieved = retriever.retrieve(case.question, top_k=5)
                     context_texts = [sc.chunk.text for sc in retrieved]
 

@@ -58,6 +58,11 @@ class HybridRetriever:
         self._bm25_k = bm25_candidates
         self._dense_k = dense_candidates
 
+    def chunk_texts(self, chunk_ids: list[str]) -> list[str]:
+        """Texts of the given chunk ids, in order, skipping ids the corpus does not hold."""
+        chunks = (self._bm25.get(cid) for cid in chunk_ids)
+        return [c.text for c in chunks if c is not None]
+
     def retrieve(
         self,
         query: str,

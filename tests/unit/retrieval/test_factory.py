@@ -33,3 +33,11 @@ def test_bm25_limit_caps_documents():
     full = factory.build_bm25(_SAMPLE)
     capped = factory.build_bm25(_SAMPLE, limit=5)
     assert 0 < len(capped) < len(full)
+
+
+def test_chunk_texts_resolves_ids_in_order():
+    retriever, _ = factory.build_hybrid_retriever(_SAMPLE, use_dense=False, use_reranker=False)
+    hits = retriever.retrieve("grip on wet rocks", top_k=2)
+    ids = [h.chunk.id for h in hits]
+    texts = retriever.chunk_texts([*ids, "unknown__0__c0"])
+    assert texts == [h.chunk.text for h in hits]

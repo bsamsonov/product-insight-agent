@@ -54,8 +54,11 @@ class _BrokenDense:
 
 def test_dense_failure_keeps_bm25_hits():
     bm25 = BM25Index()
-    other = Chunk(id="b__0__c0", doc_id="b", text="smooth reel", position=0, metadata={})
-    bm25.build([_chunk("a__0__c0", 2.0, "Line"), other])
+    others = [
+        Chunk(id=f"{p}__0__c0", doc_id=p, text=t, position=0, metadata={})
+        for p, t in (("b", "smooth reel"), ("c", "sturdy rod"), ("d", "warm socks"))
+    ]
+    bm25.build([_chunk("a__0__c0", 2.0, "Line"), *others])
     retriever = HybridRetriever(
         qdrant_index=_BrokenDense(), bm25_index=bm25, reranker=NoOpReranker()
     )

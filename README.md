@@ -63,13 +63,17 @@ at [huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023](https://huggingface
 
 ## Key Metrics
 
-| Metric | Target |
-|--------|--------|
-| Faithfulness | ≥ 0.85 |
-| Citation precision | ≥ 0.70 |
-| Groundedness | ≥ 0.85 |
-| p95 latency | < 8s |
-| Cost per request | < $0.02 (free tier: $0) |
+| Metric | Target | Measured |
+|--------|--------|----------|
+| Faithfulness (LLM judge) | ≥ 0.85 | **0.90** ✅ |
+| Citation precision | ≥ 0.70 | **0.59** ❌ |
+| Sentences with citations | ≥ 0.85 | **0.84** ≈ |
+| p95 latency (`/ask`) | < 8s | **11.1 s** (p50 10.2 s) ❌ |
+| Cost per answer | < $0.02 (free tier: $0) | **$0.002** ✅ |
+
+Full-agent eval on 35 golden-set cases over the full corpus (12,056 chunks), hybrid
+retrieval, `gemini-3.1-flash-lite`. Methodology, the BM25-only ablation and what the
+misses mean: [docs/evals/](docs/evals/README.md).
 
 ## Observability
 

@@ -44,7 +44,48 @@ attached as scores, grouped into one session per run (see [../observability.md](
 
 ## Results
 
-_Pending: the hybrid run is re-executed after the fixes below; see the note at the end._
+Run on 2026-09-27 (Hybrid) and 2026-09-25 (BM25 only), `gemini-3.1-flash-lite`, 35 cases,
+0 errors, 0 failed metric calls. Generated with `scripts/eval_table.py`:
+
+| Metric | Hybrid | BM25 only |
+|---|---|---|
+| Faithfulness (LLM judge) | 0.90 | 0.90 |
+| Citation precision | 0.59 | 0.55 |
+| Sentences with citations | 0.84 | 0.83 |
+| Expected-substring match | 0.49 | 0.49 |
+| Cost per answer (paid-tier estimate) | $0.0021 | $0.0021 |
+| Cases | 35 | 35 |
+
+**Reading the table.**
+
+- **Hybrid barely beats BM25 on this set.** Every golden-set question names its product,
+  and exact product names are what BM25 is good at. Dense retrieval adds +0.04 citation
+  precision, which is within run-to-run noise at 35 cases. A set with paraphrased,
+  product-agnostic questions is needed to show where dense retrieval earns its cost.
+- **Faithfulness is high, citation precision is not.** Answers stay true to the chunks they
+  use (0.90), but about 4 in 10 citations point at a similar product rather than the anchor
+  one. That points at retrieval scoping rather than hallucination: the plan node can set a
+  `product_title` filter, but only as an exact string match, and a question's short
+  product name rarely equals the full catalog title. Fuzzy product resolution is the
+  likely fix (not yet verified).
+- **Eval latency is not reported here.** Both runs were paced to the free-tier RPM limit,
+  and the provider's own latency varied between the two days (the hybrid run had a
+  slow block of seven consecutive cases), so eval-run latencies are not comparable.
+  Latency is measured separately on the API, below.
+
+### API latency
+
+10 sequential `POST /ask` requests (every third golden-set question), hybrid retrieval with
+reranking, no client-side pacing, 20 s between requests, default model
+`gemini-3.5-flash-lite` on the free tier, local CPU:
+
+| p50 | max | mean |
+|---|---|---|
+| 10.2 s | 11.1 s | 9.4 s |
+
+The target of p95 < 8 s is not met: each answer makes six sequential LLM calls
+(intent, plan, cluster, summarize, judge, groundedness). Running judge and groundedness in
+parallel, or skipping the judge on high-groundedness answers, are the obvious next steps.
 
 ## What the eval runs caught
 

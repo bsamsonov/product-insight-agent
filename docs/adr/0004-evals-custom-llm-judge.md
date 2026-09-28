@@ -1,6 +1,6 @@
 # ADR-0004 — Custom LLM-as-judge metrics instead of RAGAS library
 
-> Status: Accepted
+> Status: Accepted (amended 2026-09-28)
 > Date: 2026-05-16
 > Deciders: Boris Samsonov (architect)
 
@@ -33,13 +33,13 @@ The alternative approaches considered were: RAGAS (with compatibility shims), pu
 
 We will implement **custom LLM-as-judge metrics** that follow the RAGAS methodology but use our own `LLMProvider` abstraction for all model calls.
 
-The implementation lives in `packages/evals/src/poc/evals/metrics_baseline.py`. Each metric is a separate async function that:
+The implementation lives in `packages/evals/src/poc/evals/metrics.py` (`metrics_baseline.py` holds the keyless, non-LLM metrics). Each metric is a separate async function that:
 
 1. Constructs a structured evaluation prompt (loaded from `packages/prompts/data/`)
 2. Calls `LLMProvider.complete()` requesting a JSON-structured response
 3. Parses the score (0.0–1.0) from the response using Pydantic
 
-The metrics are compatible in semantics with RAGAS: scores produced by our implementation should be within ±5% of RAGAS scores on the same inputs (validated manually on the golden set). This allows us to cite RAGAS benchmarks as approximate targets.
+The metrics are compatible in semantics with RAGAS: the prompts follow the RAGAS definitions, so RAGAS benchmarks serve as approximate targets. A side-by-side comparison with RAGAS has not been run (see amendment).
 
 The eval runner in `packages/evals/src/poc/evals/runner.py` accepts a golden set JSONL file (question, reference answer, expected context) and produces a metrics report. It is invoked via `scripts/run_eval.py`.
 
@@ -52,7 +52,7 @@ The eval runner in `packages/evals/src/poc/evals/runner.py` accepts a golden set
 - **Full `LLMProvider` compatibility.** The eval metrics use the same provider abstraction as the agent — including model routing, prompt caching, and budget tracking. Eval costs appear in the same billing view as production costs.
 - **Prompt control.** We can inspect and modify the judge prompts directly. If a metric consistently over- or under-estimates quality on our domain (product reviews), we can tune the judge prompt without waiting for a RAGAS release.
 - **No LangChain dependency in evals.** The `poc-evals` package has no dependency on `langchain-core`, reducing the risk of transitive version conflicts.
-- **Consistent structured output.** We use Pydantic to parse judge responses, so malformed LLM outputs fail loudly (a `ValidationError`) rather than silently producing a default score.
+- **Consistent structured output.** We use Pydantic to parse judge responses (with a JSON-extraction fallback for providers without structured output). A response that still cannot be parsed does **not** abort the run: the metric scores 0.0 with `reasoning="eval error: …"`, so unparseable output is visible in the report but pulls the mean down rather than failing loudly.
 
 ### Negative consequences / risks
 
@@ -87,3 +87,18 @@ The eval runner in `packages/evals/src/poc/evals/runner.py` accepts a golden set
 - [RAGAS paper](https://arxiv.org/abs/2309.15217) — ES Ragas: Automated Evaluation of Retrieval Augmented Generation
 - [RAGAS documentation](https://docs.ragas.io/)
 - `docs/cost-model.md` — eval cost estimates
+
+---
+
+## Amendment 2026-09-28
+
+**Unsupported claim.** "Scores are within ±5% of RAGAS on the same inputs (validated manually)" has no artifact in `docs/evals/`. Treat it as a hypothesis until a side-by-side run exists; do not repeat it in the README or CV.
+
+**What 2026 practice expects from an LLM-judge setup** (and what is still missing here):
+
+- **Calibration against human labels** — label 30–50 answers by hand, report judge–human agreement (accuracy / Cohen's κ). Without it, a judge score is a number, not a measurement.
+- **Judge ≠ generator family** — today judge, groundedness and summarizer all route to Gemini (self-preference bias). Use a different family for the judge, or at least report the risk.
+- **Pinned judge model + prompt version** in every report, so metric deltas are attributable.
+- **Cross-check** — run RAGAS (or DeepEval) once on the golden set as an external reference; both are mature in 2026 (DeepEval is pytest-native and covers agentic/MCP metrics).
+
+The decision to own the metrics stays: it keeps judge calls on our provider abstraction, budget and tracing. CI gating today is a keyless retrieval smoke-gate (hit rate on the bundled sample); the LLM-judge suite runs manually.

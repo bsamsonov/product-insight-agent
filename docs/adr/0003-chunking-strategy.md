@@ -1,6 +1,6 @@
 # ADR-0003 — Recursive token-based chunking as default strategy
 
-> Status: Accepted
+> Status: Accepted (amended 2026-09-28)
 > Date: 2026-05-16
 > Deciders: Boris Samsonov (architect)
 
@@ -31,7 +31,7 @@ We will use **RecursiveTokenChunker** as the default chunking strategy for all d
 - **Tokenizer:** `tiktoken` with `cl100k_base` encoding (same encoding used by GPT-4 / text-embedding-ada-002; well-tested and stable)
 - **Separator hierarchy:** paragraph break → sentence break → word break (recursive fallback)
 
-The implementation lives in `packages/ingestion/src/poc/ingestion/chunker.py` as `RecursiveTokenChunker`. The class accepts `chunk_size` and `chunk_overlap` as constructor parameters so tests can override them without monkey-patching.
+The implementation lives in `packages/ingestion/src/poc/ingestion/chunker.py` as `RecursiveTokenChunker`. The class accepts `target_tokens` and `overlap` as constructor parameters so tests can override them without monkey-patching.
 
 For structured Markdown documents (runbooks, ADRs, policy documents), `StructuralMarkdownChunker` is provided as an alternative that splits on heading boundaries first, then applies token limits within each section. This preserves heading context and is used in the compliance extension (Phase 2).
 
@@ -45,7 +45,7 @@ For structured Markdown documents (runbooks, ADRs, policy documents), `Structura
 - **Deterministic chunk IDs.** Given a fixed document and fixed parameters, chunk boundaries are identical across runs. Incremental re-ingestion skips unchanged chunks.
 - **Good fit for BGE-M3.** At 400 tokens, each chunk uses ~5% of the BGE-M3 context window, leaving ample room for query prepending during retrieval.
 - **Language-agnostic.** `cl100k_base` tokenizes any UTF-8 text. No language detection or sentence boundary detection library is required.
-- **Overlap preserves boundary context.** The 50-token overlap means that a phrase split across a chunk boundary appears in full in at least one of the two adjacent chunks. Empirically this improves faithfulness scores at boundaries by 8–12%.
+- **Overlap preserves boundary context.** The 50-token overlap means that a phrase split across a chunk boundary appears in full in at least one of the two adjacent chunks. (The effect on faithfulness was not measured in this project.)
 
 ### Negative consequences / risks
 
@@ -78,3 +78,15 @@ For structured Markdown documents (runbooks, ADRs, policy documents), `Structura
 - [tiktoken documentation](https://github.com/openai/tiktoken)
 - [BGE-M3 model card](https://huggingface.co/BAAI/bge-m3) — 8192 token context limit
 - ADR-0002 — Qdrant as the vector store receiving these chunks
+
+---
+
+## Amendment 2026-09-28
+
+**Reality check.** On the real corpus (Amazon Reviews 2023, `Sports_and_Outdoors`) indexing 12,000 reviews produced 12,056 chunks: almost every review is shorter than 400 tokens, so the effective strategy is **one review = one chunk**. The recursive splitter only matters for the rare long review. This is the right outcome for review data (a review is a natural semantic unit and the citation unit), but the ADR should be read that way.
+
+**Tokenizer mismatch.** Chunk size is measured with `tiktoken` `cl100k_base`, while the embedder (`bge-m3`) uses the XLM-RoBERTa tokenizer. Counts differ by language (noticeably for non-English text). Harmless at 400 tokens vs `bge-m3`'s 8k window, but if chunk size ever approaches the embedder limit, measure with the embedder's own tokenizer.
+
+**2026 alternatives worth knowing** (not adopted — reviews are short): *contextual retrieval* (prepend an LLM-generated context line per chunk), *late chunking* (embed the whole document, pool per chunk), and parent–child retrieval (retrieve small, return the enclosing section). They pay off for long documents — relevant to the Phase-2 compliance/runbook extension, where `StructuralMarkdownChunker` is used.
+
+**Corrections to the original text.** The constructor parameters are `target_tokens` and `overlap` (not `chunk_size` / `chunk_overlap`). The claim that overlap "improves faithfulness scores at boundaries by 8–12%" was never measured in this project — treat it as unsupported (and with ≈ 1 chunk per review, overlap rarely applies at all).

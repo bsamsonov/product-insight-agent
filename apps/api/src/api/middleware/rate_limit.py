@@ -21,10 +21,14 @@ def _get_burst() -> float:
 
 
 def _make_default_redis():
-    """Create the default Redis client from env (REDIS_URL or localhost)."""
+    """Create the default Redis client from env (POC_REDIS_URL or localhost).
+
+    Same variable as the LLM router cache/budget (see .env.example), so one setting
+    points every Redis consumer at the same instance.
+    """
     import redis  # type: ignore[import-untyped]
 
-    url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    url = os.environ.get("POC_REDIS_URL") or "redis://localhost:6379/0"
     return redis.Redis.from_url(
         url, socket_connect_timeout=1, socket_timeout=1, decode_responses=True
     )

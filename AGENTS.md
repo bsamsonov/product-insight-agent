@@ -4,7 +4,7 @@
 
 ## Project
 
-Product Insight Agent — a multi-tenant agentic RAG system built as a uv workspace
+Product Insight Agent — a tenant-aware agentic RAG system built as a uv workspace
 with namespace packages under `poc.*`.
 
 ## Key conventions
@@ -33,4 +33,5 @@ The API app lives at `apps/api/src/api/`.
 
 - Add `__init__.py` to `src/poc/` (breaks namespace package)
 - Commit `.env` or any secrets
-- Use `print()` for logging — use `structlog`
+- Use `print()` for logging — use stdlib `logging` (`logging.getLogger(__name__)`; JSON
+  output is configured by `poc.observability.logging.configure()`)

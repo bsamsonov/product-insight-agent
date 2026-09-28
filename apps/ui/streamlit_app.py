@@ -54,7 +54,7 @@ if question:
     st.session_state.messages.append({"role": "user", "content": question})
 
     # Call API
-    payload: dict[str, object] = {"question": question, "tenant": tenant}
+    payload: dict[str, object] = {"question": question}
     if model:
         payload["model"] = model
 

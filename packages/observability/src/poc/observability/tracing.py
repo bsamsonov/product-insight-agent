@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import functools
 import json
 import logging
@@ -10,41 +9,14 @@ from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
+from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from poc.observability import langfuse_client
 
 _log = logging.getLogger(__name__)
 
 _provider: TracerProvider | None = None
-
-
-def _make_langfuse_processor() -> SpanProcessor | None:
-    """Build a BatchSpanProcessor that ships spans to Langfuse over OTLP/HTTP.
-
-    Langfuse v3 ingests OpenTelemetry natively on ``/api/public/otel`` and maps
-    ``gen_ai.*`` spans to *generations* (model, tokens, cost) automatically. Enabled
-    only when ``LANGFUSE_HOST`` is set; otherwise returns None and the app runs with
-    no external export (and no errors).
-    """
-    host = os.getenv("LANGFUSE_HOST")
-    if not host:
-        return None
-
-    # Lazy import: the OTLP exporter is an optional dependency.
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-
-    public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
-    secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
-    token = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
-    endpoint = f"{host.rstrip('/')}/api/public/otel/v1/traces"
-
-    exporter = OTLPSpanExporter(
-        endpoint=endpoint,
-        headers={"Authorization": f"Basic {token}"},
-    )
-    _log.info("OTel: exporting spans to Langfuse at %s", endpoint)
-    return BatchSpanProcessor(exporter)
 
 
 def configure(
@@ -58,7 +30,8 @@ def configure(
 
     - ``in_memory=True`` → ``InMemorySpanExporter`` (tests only; skips the others).
     - ``export_to_console`` / ``OTEL_CONSOLE_EXPORT=true`` → ``ConsoleSpanExporter``.
-    - ``LANGFUSE_HOST`` set → OTLP/HTTP exporter to Langfuse (see _make_langfuse_processor).
+    - ``LANGFUSE_HOST`` + keys set → Langfuse SDK span processor on this provider
+      (see :mod:`poc.observability.langfuse_client`).
     """
     global _provider
 
@@ -72,9 +45,7 @@ def configure(
     else:
         if export_to_console or os.getenv("OTEL_CONSOLE_EXPORT", "").lower() == "true":
             provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
-        langfuse_processor = _make_langfuse_processor()
-        if langfuse_processor is not None:
-            provider.add_span_processor(langfuse_processor)
+        langfuse_client.attach_to_provider(provider)
 
     trace.set_tracer_provider(provider)
     _provider = provider

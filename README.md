@@ -64,6 +64,16 @@ at [huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023](https://huggingface
 | p95 latency | < 8s |
 | Cost per request | < $0.02 (free tier: $0) |
 
+## Observability
+
+Every `/ask` request and every eval case is one trace in Langfuse. The trace holds the
+LangGraph node tree, each LLM generation with its tokens and cost, and quality scores
+(judge verdict, groundedness, eval metrics). Application code only emits OpenTelemetry
+spans; the Langfuse SDK is attached to the tracer provider in one place and stays off
+until `LANGFUSE_*` is set. Details and setup: [docs/observability.md](docs/observability.md).
+
+![Langfuse trace](docs/images/langfuse-trace.png)
+
 ## Architecture
 
 ```mermaid
@@ -102,7 +112,7 @@ graph TD
 | `poc-evals` | Eval metrics (faithfulness, citation precision/recall), golden set runner |
 | `poc-guardrails` | Input PII redaction, prompt injection detection, output groundedness check |
 | `poc-audit` | Append-only async audit log (JSONL) |
-| `poc-observability` | OTel tracing setup, JSON logging |
+| `poc-observability` | OTel tracing, Langfuse export and scores, JSON logging |
 | `poc-api` | FastAPI HTTP API with tenant resolution and audit logging |
 
 ## Requirements
@@ -197,6 +207,7 @@ packages/
 | Document | Description |
 |----------|-------------|
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records (8 ADRs) |
+| [`docs/observability.md`](docs/observability.md) | Tracing design, Langfuse setup, scores |
 | [`docs/cost-model.md`](docs/cost-model.md) | Cost projections at various QPS levels |
 | [`docs/security/redteam-report.md`](docs/security/redteam-report.md) | OWASP LLM Top-10 assessment |
 | [`docs/demo/script.md`](docs/demo/script.md) | End-to-end demo walkthrough |

@@ -1,5 +1,10 @@
 # Cost Model — Product Insight Agent
 
+> **Update 2026-09:** Gemini 2.5 models are no longer available to new API users. The routing
+> table now uses **Gemini 3.5 Flash-Lite** (classifier, judge) and **Gemini 3.5 Flash** (planner,
+> summarizer); see `packages/llm/data/router.yaml` and `pricing.yaml`. The figures below still
+> describe the 2.5 generation.
+
 > Last updated: 2026-05-16
 > Pricing basis: May 2026 public API pricing (approximate; verify before production budget planning)
 

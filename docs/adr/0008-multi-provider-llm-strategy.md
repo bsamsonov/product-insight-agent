@@ -1,5 +1,9 @@
 # ADR-0008 — Multi-Provider LLM Strategy (Free-Tier First)
 
+> **Update 2026-09:** Gemini 2.5 models are no longer available to new API users. The routing
+> table now uses **Gemini 3.5 Flash-Lite** (classifier, judge) and **Gemini 3.5 Flash** (planner,
+> summarizer); see `packages/llm/data/router.yaml`. The decision itself is unchanged.
+
 > Status: Accepted
 > Date: 2026-05-08
 > Deciders: Boris Samsonov (architect)

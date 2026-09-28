@@ -16,7 +16,7 @@ class ProviderConfig:
 REGISTRY: dict[str, ProviderConfig] = {
     "gemini": ProviderConfig(
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        default_model="gemini-2.5-flash",
+        default_model="gemini-3.5-flash-lite",
     ),
     "groq": ProviderConfig(
         base_url="https://api.groq.com/openai/v1",
@@ -33,7 +33,7 @@ REGISTRY: dict[str, ProviderConfig] = {
     # Optional named provider for any OpenAI-compatible gateway (LiteLLM, OpenRouter,
     # OmniRoute, ...). Not used as a default anywhere — see LLMSettings.default_provider.
     "omniroute": ProviderConfig(
-        base_url="http://localhost:20128/v1",
+        base_url="http://localhost:21128/v1",
         default_model="gpt-4o-mini",
     ),
 }

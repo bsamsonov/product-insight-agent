@@ -58,7 +58,7 @@ class TestRoutedLLMConfig:
     def test_classifier_primary_is_gemini_flash(self, routed_llm: RoutedLLM) -> None:
         cfg = routed_llm._routes["classifier"]
         assert cfg.primary.provider == "gemini"
-        assert cfg.primary.model == "gemini-2.5-flash"
+        assert cfg.primary.model == "gemini-3.5-flash-lite"
         assert cfg.primary.max_tokens == 256
 
     def test_classifier_fallback_is_groq(self, routed_llm: RoutedLLM) -> None:
@@ -213,8 +213,8 @@ class TestRoutedLLMEscalate:
     async def test_escalate_fallback_is_gemini_pro(
         self, routed_llm: RoutedLLM, messages: list[LLMMessage]
     ) -> None:
-        """Escalate fallback should be gemini-2.5-pro."""
-        gemini_response = _make_response("gemini-2.5-pro")
+        """Escalate fallback should be gemini-3.5-flash."""
+        gemini_response = _make_response("gemini-3.5-flash")
 
         deepseek_mock = MagicMock()
         deepseek_mock.complete = AsyncMock(
@@ -230,7 +230,7 @@ class TestRoutedLLMEscalate:
         with patch.object(routed_llm, "_get_provider", side_effect=_get_provider):
             result = await routed_llm.route("escalate", messages)
 
-        assert result.model == "gemini-2.5-pro"
+        assert result.model == "gemini-3.5-flash"
 
 
 class TestProviderCaching:

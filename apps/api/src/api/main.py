@@ -16,6 +16,7 @@ from poc.core.tenant import current_tenant_token, reset_tenant
 from poc.guardrails.input_checks import check_input
 from poc.llm.registry import REGISTRY, get_provider
 from poc.llm.settings import LLMSettings
+from poc.observability import langfuse_client
 from poc.observability.tracing import configure as configure_tracing
 from poc.observability.tracing import get_tracer
 from pydantic import BaseModel
@@ -156,6 +157,7 @@ async def lifespan(app: FastAPI):
     if isinstance(audit, PostgresAuditStore):
         await audit.close()
     _state.clear()
+    langfuse_client.flush()
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -299,7 +301,15 @@ async def ask(
         with tracer.start_as_current_span("agent.run") as span:
             span.set_attribute("tenant", tenant)
             span.set_attribute("question.length", len(sanitized_q))
+            langfuse_client.set_trace_attributes(
+                span,
+                name="agent.run",
+                user_id=tenant,
+                tags=["direct-llm"],
+                input={"question": sanitized_q},
+            )
             response = await provider.complete(messages, model=model, max_tokens=800)
+            langfuse_client.set_trace_attributes(span, output=response.content)
 
         latency_ms = int(time.time() * 1000) - start_ms
 

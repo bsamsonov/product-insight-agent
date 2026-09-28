@@ -42,8 +42,14 @@ Design choices:
 cp infra/langfuse/.env.example infra/langfuse/.env
 # fill NEXTAUTH_SECRET, SALT, ENCRYPTION_KEY and pick your own
 # LANGFUSE_INIT_PROJECT_PUBLIC_KEY / _SECRET_KEY / LANGFUSE_INIT_USER_PASSWORD
-docker compose up -d            # Langfuse UI on http://localhost:${LANGFUSE_PORT:-3000}
+docker compose --profile observability up -d   # Langfuse UI on http://localhost:${LANGFUSE_PORT:-3000}
 ```
+
+The Langfuse stack (ClickHouse, MinIO, Langfuse server + worker) lives in the `observability`
+compose profile, so a plain `docker compose up -d` starts only Postgres, Qdrant and Redis. Set
+`COMPOSE_PROFILES=observability` to include it by default. MinIO uses the Chainguard image
+(`cgr.dev/chainguard/minio`), because `minio/minio` and `minio/mc` are no longer published on
+Docker Hub; its two buckets (`langfuse-events`, `langfuse-media`) are created on startup.
 
 Then enable export in the root `.env` with the same project keys:
 

@@ -1,18 +1,22 @@
 # docker-compose.yml — Product Insight Agent POC
 #
-# Starts: Postgres 16, Qdrant, Redis 7, ClickHouse, MinIO, Langfuse (server + worker).
+# Core services (always): Postgres 16, Qdrant, Redis 7.
+# Profile `observability` (optional): ClickHouse, MinIO, Langfuse (server + worker).
+#
 # Usage:
-#   cp infra/langfuse/.env.example infra/langfuse/.env   # fill secrets once
-#   docker compose up -d
+#   docker compose up -d                                   # core stack only
+#   cp infra/langfuse/.env.example infra/langfuse/.env     # fill secrets once
+#   docker compose --profile observability up -d          # core + Langfuse
+#   (or set COMPOSE_PROFILES=observability in your shell / .env)
 #
 # Ports exposed on localhost:
 #   5432  — Postgres
 #   6333  — Qdrant HTTP  (gRPC: 6334)
 #   6379  — Redis
-#   8123  — ClickHouse HTTP (Langfuse trace/analytics storage)
-#   9000  — MinIO API   (Langfuse blob/event storage)
-#   9001  — MinIO Console UI
-#   3000  — Langfuse UI / API
+#   8123  — ClickHouse HTTP (Langfuse trace/analytics storage)   [observability]
+#   9000  — MinIO API   (Langfuse blob/event storage)            [observability]
+#   9001  — MinIO Console UI                                     [observability]
+#   3000  — Langfuse UI / API                                    [observability]
 
 services:
 
@@ -69,6 +73,7 @@ services:
   # ── ClickHouse (Langfuse v3 analytics/trace storage) ──────────────────────
   clickhouse:
     image: clickhouse/clickhouse-server:latest
+    profiles: [observability]
     environment:
       CLICKHOUSE_DB: langfuse
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-langfuse}
@@ -87,9 +92,18 @@ services:
     restart: unless-stopped
 
   # ── MinIO (S3-compatible blob/event storage for Langfuse v3) ──────────────
+  # Langfuse v3 requires S3: the server stores raw ingestion events in
+  # `langfuse-events` (the worker reads them back and writes to ClickHouse) and
+  # multimodal attachments in `langfuse-media`.
+  # The upstream `minio/minio` and `minio/mc` images are no longer published on
+  # Docker Hub, so this uses Chainguard's MinIO build (same image as Langfuse's
+  # own docker-compose). Buckets are created as top-level directories before the
+  # server starts, which replaces the former `minio-init` + `mc mb` container.
   minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+    image: cgr.dev/chainguard/minio:latest
+    profiles: [observability]
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse-events /data/langfuse-media && minio server /data --address ":9000" --console-address ":9001"'
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-langfuse}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-langfuse_secret}
@@ -99,31 +113,18 @@ services:
       - "${MINIO_API_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
     healthcheck:
-      test: ["CMD-SHELL", "mc ready local 2>/dev/null || wget -qO- http://localhost:9000/minio/health/live | grep -q . || exit 1"]
-      interval: 10s
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 5s
     restart: unless-stopped
-
-  # One-shot container that creates required MinIO buckets on first run.
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-        mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-langfuse} ${MINIO_ROOT_PASSWORD:-langfuse_secret};
-        mc mb --ignore-existing local/langfuse-events;
-        mc mb --ignore-existing local/langfuse-media;
-        echo 'MinIO buckets ready.';
-      "
-    restart: "no"
 
   # ── Langfuse server ────────────────────────────────────────────────────────
   # Serves the UI and public API, handles SDK ingestion.
   langfuse-server:
     image: langfuse/langfuse:3
+    profiles: [observability]
     depends_on:
       postgres:
         condition: service_healthy
@@ -131,8 +132,8 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
     env_file:
       - ./infra/langfuse/.env
     environment:
@@ -169,6 +170,7 @@ services:
   # Processes async jobs (eval runs, score computation, exports).
   langfuse-worker:
     image: langfuse/langfuse-worker:3
+    profiles: [observability]
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,8 +178,8 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
     env_file:
       - ./infra/langfuse/.env
     environment:

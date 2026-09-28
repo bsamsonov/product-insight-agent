@@ -73,8 +73,22 @@ def _count_summary(stdout: str) -> tuple[int, int]:
     return passed, total
 
 
-def _status_icon(status: str) -> str:
-    return "PASS" if status == "PASSED" else "FAIL"
+# Tests that pass by asserting a known gap (the guardrail does NOT handle the attack;
+# the test only checks that nothing crashes). Reported separately so that "passed"
+# is not read as "defended".
+_GAP_TESTS = {
+    "test_output_sql_injection_signal",
+    "test_llm06_shell_command_injection_gap_documented",
+    "test_llm06_api_delete_command_gap_documented",
+    "test_llm08_null_bytes_sanitized",
+    "test_llm08_unicode_lookalikes_checked",
+}
+
+
+def _status_icon(test_name: str, status: str) -> str:
+    if status != "PASSED":
+        return "FAIL"
+    return "GAP (documented, not defended)" if test_name in _GAP_TESTS else "PASS"
 
 
 def generate_report(pytest_stdout: str, returncode: int) -> None:
@@ -82,6 +96,12 @@ def generate_report(pytest_stdout: str, returncode: int) -> None:
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     categories = _parse_results(pytest_stdout)
     passed, total = _count_summary(pytest_stdout)
+    gap_count = sum(
+        1
+        for results in categories.values()
+        for name, st in results
+        if st == "PASSED" and name in _GAP_TESTS
+    )
 
     lines: list[str] = []
     lines.append("# Red-Team Report — OWASP LLM Top-10\n")
@@ -96,25 +116,33 @@ def generate_report(pytest_stdout: str, returncode: int) -> None:
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
     lines.append(f"| Total cases | {total} |")
-    lines.append(f"| Passed (correctly handled) | {passed}/{total} |")
-    lines.append(f"| Failed | {total - passed}/{total} |")
-    lines.append(f"| Overall status | {'PASS' if returncode == 0 else 'FAIL'} |")
+    lines.append(f"| Attack handled by guardrails | {passed - gap_count}/{total} |")
+    lines.append(f"| Known gap — test passes by documenting it (see below) | {gap_count}/{total} |")
+    lines.append(f"| Test failures | {total - passed}/{total} |")
+    lines.append(f"| Test suite status | {'green' if returncode == 0 else 'red'} |")
+    lines.append("")
+    lines.append(
+        "A green suite does **not** mean every attack is blocked: the gap tests assert "
+        "the current (undefended) behaviour so that a fix shows up as a deliberate test change."
+    )
     lines.append("")
 
     for prefix, (cat_id, cat_name, expected_count) in _CATEGORY_MAP.items():
         results = categories.get(prefix, [])
-        cat_passed = sum(1 for _, s in results if s == "PASSED")
+        cat_passed = sum(1 for n, s in results if s == "PASSED" and n not in _GAP_TESTS)
+        cat_gaps = sum(1 for n, s in results if s == "PASSED" and n in _GAP_TESTS)
         lines.append("---")
         lines.append("")
         lines.append(f"## {cat_id} — {cat_name} ({expected_count} cases)")
         lines.append("")
         if results:
-            lines.append(f"Result: **{cat_passed}/{len(results)} passed**")
+            gap_note = f", {cat_gaps} documented gap(s)" if cat_gaps else ""
+            lines.append(f"Result: **{cat_passed}/{len(results)} handled{gap_note}**")
             lines.append("")
             lines.append("| Test | Status |")
             lines.append("|------|--------|")
             for test_name, status in results:
-                lines.append(f"| `{test_name}` | {_status_icon(status)} |")
+                lines.append(f"| `{test_name}` | {_status_icon(test_name, status)} |")
         else:
             lines.append("_No results collected for this category._")
         lines.append("")

@@ -58,6 +58,11 @@ class HybridRetriever:
         self._bm25_k = bm25_candidates
         self._dense_k = dense_candidates
 
+    def chunk_texts(self, chunk_ids: list[str]) -> list[str]:
+        """Texts of the given chunk ids, in order, skipping ids the corpus does not hold."""
+        chunks = (self._bm25.get(cid) for cid in chunk_ids)
+        return [c.text for c in chunks if c is not None]
+
     def retrieve(
         self,
         query: str,
@@ -66,7 +71,12 @@ class HybridRetriever:
         filters: dict[str, Any] | None = None,
     ) -> list[ScoredChunk]:
         bm25_hits = self._bm25.search(query, top_k=self._bm25_k)
-        dense_hits = self._qdrant.search(query, top_k=self._dense_k, filters=filters)
+        try:
+            dense_hits = self._qdrant.search(query, top_k=self._dense_k, filters=filters)
+        except Exception as exc:
+            # A bad filter or an unreachable Qdrant must not also discard the BM25 hits.
+            _log.warning("Dense search failed (%s); continuing with BM25 only", exc)
+            dense_hits = []
 
         merged = _reciprocal_rank_fusion(bm25_hits, dense_hits)
         reranked = self._reranker.rerank(query, merged, top_k=top_k)

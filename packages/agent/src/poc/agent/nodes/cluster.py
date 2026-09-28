@@ -12,7 +12,19 @@ _log = logging.getLogger(__name__)
 _CLUSTER_THEMES = {
     "comfort & fit": ["comfort", "fit", "size", "tight", "loose", "wide", "narrow"],
     "durability & quality": ["durable", "quality", "wear", "last", "broken", "defect"],
-    "performance": ["performance", "grip", "traction", "run", "sport", "athletic"],
+    # Sports & outdoors gear, not only running shoes: bottles, packs, tents, cleats, reels…
+    "performance": [
+        "performance",
+        "grip",
+        "traction",
+        "sturdy",
+        "stable",
+        "waterproof",
+        "lightweight",
+        "effective",
+        "sport",
+        "athletic",
+    ],
     "appearance": ["look", "style", "color", "design", "aesthetic"],
     "value": ["price", "value", "worth", "money", "cheap", "expensive"],
     "customer service": ["service", "support", "return", "exchange", "ship", "deliver"],

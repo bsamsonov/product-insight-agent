@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,7 +14,7 @@ from typing import TYPE_CHECKING
 import typer
 
 if TYPE_CHECKING:
-    from poc.evals.runner import EvalCase
+    from poc.evals.runner import EvalCase, EvalResult
     from poc.retrieval.hybrid import HybridRetriever
 
 app = typer.Typer(help="Run baseline RAG evaluation.")
@@ -20,12 +22,43 @@ _log = logging.getLogger(__name__)
 
 _SCRIPTS_DIR = Path(__file__).parent
 _PROJECT_ROOT = _SCRIPTS_DIR.parent
-_DEFAULT_EVAL_SET = _PROJECT_ROOT / "packages" / "evals" / "data" / "golden_set_v2_short.jsonl"
+_DEFAULT_EVAL_SET = _PROJECT_ROOT / "packages" / "evals" / "data" / "golden_set_v2.jsonl"
 _DEFAULT_DOCS_EVALS = _PROJECT_ROOT / "docs" / "evals"
 
 _NON_LLM_METRICS = {"citation_precision", "groundedness_heuristic"}
 _LLM_METRICS = {"faithfulness", "answer_relevance", "context_precision", "context_recall"}
 _ALL_METRICS = _NON_LLM_METRICS | _LLM_METRICS
+
+
+def _record_llm_metric(
+    case_scores: dict[str, float], failures: dict[str, int], name: str, result: object
+) -> None:
+    """Store an LLM metric score, or count it as a failure if the judge call errored."""
+    reasoning = str(getattr(result, "reasoning", ""))
+    if reasoning.startswith("eval error"):
+        failures[name] = failures.get(name, 0) + 1
+        return
+    case_scores[name] = float(getattr(result, "score", 0.0))
+
+
+def latency_cost_summary(results: list[EvalResult]) -> dict[str, float | int]:
+    """p50/p95 answer latency and per-answer cost over the successful cases."""
+    ok = [r for r in results if not r.error]
+    latencies = sorted(r.latency_ms for r in ok)
+    costs = [r.cost_usd for r in ok if r.cost_usd is not None]
+
+    def pct(q: float) -> int:
+        if not latencies:
+            return 0
+        # nearest-rank percentile
+        return latencies[max(0, math.ceil(q * len(latencies)) - 1)]
+
+    return {
+        "latency_p50_ms": pct(0.50),
+        "latency_p95_ms": pct(0.95),
+        "mean_cost_usd": round(sum(costs) / len(costs), 6) if costs else 0.0,
+        "total_cost_usd": round(sum(costs), 6),
+    }
 
 
 @app.command()
@@ -55,6 +88,14 @@ def main(
         help="Path to the corpus JSONL used to build the BM25 index",
     ),
     limit: int | None = typer.Option(None, help="Max eval cases to run"),
+    label: str | None = typer.Option(
+        None, "--label", help="Human-readable run name stored in the report (table column)"
+    ),
+    bm25_limit: int | None = typer.Option(
+        None,
+        "--bm25-limit",
+        help="Index only the first N corpus documents into BM25 (default: whole corpus)",
+    ),
     judge: bool = typer.Option(True, help="Run faithfulness LLM judge (legacy flag)"),
     use_agent: bool = typer.Option(
         False,
@@ -89,7 +130,7 @@ def main(
 ) -> None:
     logging.basicConfig(level=logging.WARNING)
 
-    # Resolve short name to full path (e.g. "golden_set_v0" → .../data/golden_set_v0.jsonl)
+    # Resolve short name to full path (e.g. "golden_set_v2" → .../data/golden_set_v2.jsonl)
     if not eval_set.exists() and not eval_set.suffix:
         eval_set = _PROJECT_ROOT / "packages" / "evals" / "data" / f"{eval_set.name}.jsonl"
 
@@ -98,7 +139,7 @@ def main(
     if resolved_output is None:
         _DEFAULT_DOCS_EVALS.mkdir(parents=True, exist_ok=True)
         date_str = datetime.now(UTC).strftime("%Y%m%d")
-        set_name = eval_set.stem  # e.g. "golden_set_v1"
+        set_name = eval_set.stem  # e.g. "golden_set_v2"
         resolved_output = _DEFAULT_DOCS_EVALS / f"{date_str}_{set_name}.json"
 
     # Resolve provider/model: single source of default is LLMSettings.default_provider
@@ -122,6 +163,8 @@ def main(
             baseline=baseline,
             data_path=resolved_data_path,
             limit=limit,
+            bm25_limit=bm25_limit,
+            label=label,
             run_judge=judge,
             use_agent=use_agent,
             metric_names=[m.strip() for m in metrics.split(",") if m.strip()],
@@ -142,6 +185,8 @@ async def _run_eval(
     baseline: Path | None,
     data_path: Path,
     limit: int | None,
+    bm25_limit: int | None,
+    label: str | None,
     run_judge: bool,
     use_agent: bool,
     metric_names: list[str],
@@ -162,25 +207,18 @@ async def _run_eval(
         context_recall as ctx_recall,
     )
     from poc.evals.runner import EvalResult, _check_substrings, load_eval_cases
-    from poc.ingestion.chunker import RecursiveTokenChunker
-    from poc.ingestion.normalizer import normalize
-    from poc.ingestion.sources.jsonl import JsonlSource
     from poc.llm.openai_compatible import OpenAICompatibleProvider
+    from poc.llm.rate_limit import start_pacing_meter
     from poc.observability import langfuse_client
     from poc.observability.tracing import configure as configure_tracing
     from poc.observability.tracing import get_tracer
-    from poc.retrieval.bm25 import BM25Index
-    from poc.retrieval.hybrid import HybridRetriever
-    from poc.retrieval.qdrant_index import QdrantIndex
-    from poc.retrieval.reranker import CrossEncoderReranker, NoOpReranker
+    from poc.retrieval.factory import build_hybrid_retriever
 
     # Validate metric names
     unknown = set(metric_names) - _ALL_METRICS
     if unknown:
         typer.echo(f"WARNING: unknown metrics (will skip): {unknown}", err=True)
         metric_names = [m for m in metric_names if m in _ALL_METRICS]
-
-    active_llm_metrics = set(metric_names) & _LLM_METRICS
 
     # Initialise OpenTelemetry -> Langfuse export. The API app calls this at startup,
     # but this CLI does not go through it, so without this the get_tracer()/span calls
@@ -201,49 +239,15 @@ async def _run_eval(
     else:
         typer.echo(f"Running {len(cases)} eval cases with metrics: {metric_names}")
 
-    bm25 = BM25Index()
-    reviews_path = data_path
-
-    if reviews_path.exists():
-        typer.echo("Loading documents into BM25 index...")
-        chunker = RecursiveTokenChunker()
-        all_chunks = []
-        for i, raw_doc in enumerate(JsonlSource(reviews_path).iter()):
-            if i >= 2000:
-                break
-            doc = normalize(raw_doc)
-            all_chunks.extend(chunker.chunk(doc))
-        bm25.build(all_chunks)
-        typer.echo(f"BM25 index: {len(bm25)} chunks")
-    else:
-        typer.echo("No reviews.jsonl found, eval will have no context.")
-
-    try:
-        from poc.retrieval.bge_embedder import BgeM3Embedder
-
-        embedder = BgeM3Embedder()
-        qdrant_index = QdrantIndex(embedder=embedder, qdrant_url=qdrant_url, tenant=tenant)
-        typer.echo("Qdrant connected.")
-    except Exception as e:
-        typer.echo(f"Qdrant unavailable ({e}), using BM25-only retrieval.")
-
-        class _NoOpQdrant:
-            def search(self, *args, **kwargs):
-                return []
-
-        qdrant_index = _NoOpQdrant()
-
-    try:
-        reranker = CrossEncoderReranker()
-        typer.echo("CrossEncoderReranker loaded.")
-    except Exception as e:
-        typer.echo(f"CrossEncoderReranker unavailable ({e}), falling back to NoOpReranker.")
-        reranker = NoOpReranker()
-    retriever = HybridRetriever(
-        qdrant_index=qdrant_index,
-        bm25_index=bm25,
-        reranker=reranker,
+    typer.echo(f"Building retriever over {data_path}...")
+    retriever, retriever_info = build_hybrid_retriever(
+        data_path, qdrant_url=qdrant_url, tenant=tenant, bm25_limit=bm25_limit
     )
+    typer.echo(
+        f"Retriever: {retriever_info.mode} (bm25={retriever_info.bm25_chunks} chunks, "
+        f"dense={retriever_info.dense_points} points, reranker={retriever_info.reranker})"
+    )
+    has_context = retriever_info.bm25_chunks > 0
 
     if retrieval_only:
         await _run_retrieval_only(
@@ -258,7 +262,10 @@ async def _run_eval(
     if use_agent:
         from poc.agent.agent import ProductInsightAgent
 
-        pipeline = ProductInsightAgent(llm=llm, retriever=retriever)
+        # --model applies to every node, so a run is pinned to one model end to end.
+        pipeline = ProductInsightAgent(
+            llm=llm, retriever=retriever, fast_model=model, smart_model=model, judge_model=model
+        )
         typer.echo("Pipeline: ProductInsightAgent (LangGraph)")
     else:
         from poc.agent.rag_pipeline import RAGPipeline
@@ -272,6 +279,10 @@ async def _run_eval(
     results: list[EvalResult] = []
     # Per-metric accumulators: metric_name -> list[float]
     metric_accumulator: dict[str, list[float]] = {m: [] for m in metric_names}
+    # LLM metric calls that errored (rate limit, bad JSON …): excluded from the means and
+    # counted separately, instead of silently scoring 0.
+    metric_failures: dict[str, int] = {}
+    dead_streak = 0
     substring_matches: list[bool] = []
 
     for i, case in enumerate(cases):
@@ -288,6 +299,10 @@ async def _run_eval(
                 input={"case_id": case.id, "question": case.question},
             )
             try:
+                t0 = time.monotonic()
+                # Pacing waits (POC_<PROVIDER>_RPM) are client-side throttling, not
+                # pipeline latency — measure them and subtract.
+                pacing = start_pacing_meter()
                 if use_agent:
                     answer = await pipeline.get_answer(
                         case.question, tenant=tenant, filters=case.filters or None
@@ -295,10 +310,15 @@ async def _run_eval(
                 else:
                     q = Question(text=case.question, filters=case.filters)
                     answer = await pipeline.answer(q)
+                # Answer latency (retrieval + all LLM calls), excluding metrics and pacing waits.
+                answer_latency_ms = int((time.monotonic() - t0 - pacing[0]) * 1000)
                 cited_ids = [c.chunk_id for c in answer.citations]
 
-                context_texts: list[str] = []
-                if bm25._chunks and active_llm_metrics:
+                # Judge the answer against the chunks the pipeline actually used (after
+                # plan filters and reranking); fall back to a fresh top-5 retrieval only
+                # when the pipeline reports none.
+                context_texts: list[str] = retriever.chunk_texts(answer.used_chunks)
+                if not context_texts and has_context:
                     retrieved = retriever.retrieve(case.question, top_k=5)
                     context_texts = [sc.chunk.text for sc in retrieved]
 
@@ -316,18 +336,20 @@ async def _run_eval(
                 if "faithfulness" in metric_names and (run_judge or "faithfulness" in metric_names):
                     if context_texts:
                         faith = await faithfulness(answer.text, context_texts, llm, model=model)
-                        case_scores["faithfulness"] = faith.score
+                        _record_llm_metric(case_scores, metric_failures, "faithfulness", faith)
                     else:
                         case_scores["faithfulness"] = 0.0
 
                 if "answer_relevance" in metric_names:
                     ar = await answer_relevance(case.question, answer.text, llm, model=model)
-                    case_scores["answer_relevance"] = ar.score
+                    _record_llm_metric(case_scores, metric_failures, "answer_relevance", ar)
 
                 if "context_precision" in metric_names:
                     if context_texts:
                         cp_llm = await ctx_precision(case.question, context_texts, llm, model=model)
-                        case_scores["context_precision"] = cp_llm.score
+                        _record_llm_metric(
+                            case_scores, metric_failures, "context_precision", cp_llm
+                        )
                     else:
                         case_scores["context_precision"] = 1.0
 
@@ -337,7 +359,7 @@ async def _run_eval(
                         cr = await ctx_recall(
                             answer.text, expected_answer, context_texts, llm, model=model
                         )
-                        case_scores["context_recall"] = cr.score
+                        _record_llm_metric(case_scores, metric_failures, "context_recall", cr)
                     else:
                         case_scores["context_recall"] = 1.0 if not expected_answer else 0.0
 
@@ -352,7 +374,7 @@ async def _run_eval(
                     faithfulness_score=case_scores.get("faithfulness", 0.0),
                     citation_precision_score=case_scores.get("citation_precision", 0.0),
                     substring_match=substr_match,
-                    latency_ms=answer.latency_ms,
+                    latency_ms=answer_latency_ms,
                     cost_usd=answer.cost_usd,
                 )
                 # Attach extended scores for output
@@ -383,6 +405,19 @@ async def _run_eval(
             )
 
         results.append(result)
+
+        # Nodes and metrics fail soft, so an exhausted quota would otherwise produce a
+        # full report of fallback answers. Stop once three cases in a row lost every
+        # LLM metric.
+        requested_llm = [m for m in metric_names if m in _LLM_METRICS]
+        scored_llm = [m for m in requested_llm if m in getattr(result, "_scores", {})]
+        dead_streak = dead_streak + 1 if requested_llm and not scored_llm else 0
+        if dead_streak >= 3:
+            typer.echo(
+                "ABORT: 3 consecutive cases lost every LLM metric (quota or provider down).",
+                err=True,
+            )
+            raise typer.Exit(code=2)
         substring_matches.append(result.substring_match)
         for m_name in metric_names:
             score_val = getattr(result, "_scores", {}).get(m_name)
@@ -411,6 +446,7 @@ async def _run_eval(
             "retrieved_count": getattr(r, "_retrieved_count", 0),
             "substring_match": r.substring_match,
             "latency_ms": r.latency_ms,
+            "cost_usd": r.cost_usd,
             "error": r.error,
         }
         for r in results
@@ -421,14 +457,19 @@ async def _run_eval(
 
     report = {
         "timestamp": timestamp,
+        "label": label,
         "golden_set": golden_set_name,
         "pipeline": "agent" if use_agent else "baseline",
         "metrics_summary": metrics_summary,
         "summary": {
             "total_cases": n,
             "errors": errors,
+            "metric_failures": metric_failures,
             "substring_match_rate": round(substr_rate, 4),
+            **latency_cost_summary(results),
         },
+        "provider": provider,
+        "model": model,
         "per_case": per_case,
     }
 
@@ -437,7 +478,14 @@ async def _run_eval(
     typer.echo("\n=== Eval Report ===")
     typer.echo(f"Total cases:         {n}")
     typer.echo(f"Errors:              {errors}")
+    if metric_failures:
+        typer.echo(f"Metric failures:     {metric_failures} (excluded from means)")
     typer.echo(f"Substring match:     {substr_rate:.4f}")
+    lc = report["summary"]
+    typer.echo(f"Latency p50/p95 ms:  {lc['latency_p50_ms']} / {lc['latency_p95_ms']}")
+    typer.echo(
+        f"Cost per answer:     ${lc['mean_cost_usd']:.5f} (total ${lc['total_cost_usd']:.4f})"
+    )
     for m_name, stats in metrics_summary.items():
         typer.echo(
             f"{m_name}: mean={stats['mean']:.4f} min={stats['min']:.4f} max={stats['max']:.4f}"

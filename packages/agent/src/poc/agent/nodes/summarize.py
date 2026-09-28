@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from poc.agent.state import AgentState
 from poc.llm.budget import BudgetExceededError
 from poc.llm.provider import LLMMessage, LLMProvider
 
 _log = logging.getLogger(__name__)
-
-_CITATION_RE = re.compile(r"\[([^\]]+)\]")
 
 
 def _format_context(retrieved: list[dict]) -> str:

@@ -13,7 +13,7 @@ flowchart LR
     Retriever --> Qdrant[(Qdrant\nvectors)]
     Retriever --> BM25[BM25\nIndex]
     Agent --> Cluster[Cluster\nAnalyzer]
-    Agent --> Summarize[Summarizer\nGemini Pro]
+    Agent --> Summarize[Summarizer]
     Agent --> Judge[Quality\nJudge]
     Judge -->|confidence < 0.6| HITL([Human Review])
     Judge -->|confidence >= 0.6| Response([Response\nwith Citations])
@@ -24,22 +24,28 @@ flowchart LR
 
 ## Quickstart
 
-1. `cp .env.example .env` — fill in at minimum `POC_GEMINI_API_KEY` (free at [aistudio.google.com](https://aistudio.google.com))
-2. `docker compose up -d` — starts Qdrant, Redis, Postgres, Langfuse
-3. `uv sync --all-packages` — install all workspace dependencies
-4. `uv run python scripts/index.py --source data/raw/reviews.jsonl --tenant default --limit 1000` — index sample data
-5. `uv run ask "What do customers say about hair and skincare products?"` — CLI test
-6. `uv run uvicorn api.main:app --port 8000` — start API
-7. Optional: `streamlit run apps/ui/streamlit_app.py` — launch UI
-
-A new user who follows these steps should have a working local instance and their first answer within 30 minutes.
+1. `cp .env.example .env` and set `POC_GEMINI_API_KEY` (free at [aistudio.google.com](https://aistudio.google.com/apikey)).
+2. `uv sync --all-packages` installs all workspace packages.
+3. `docker compose up -d qdrant redis postgres` starts the core infrastructure. Add Langfuse
+   later if you want traces (see [docs/observability.md](docs/observability.md)).
+4. `uv run ask "Say hello"` runs a provider smoke test: one direct LLM call, no retrieval.
+5. Index a corpus. You can use the bundled sample (instant) or download the full dataset:
+   ```bash
+   uv run python scripts/index.py --source data/raw/sample_reviews.jsonl --recreate
+   # or: uv run python scripts/download_dataset.py && \
+   #     uv run python scripts/index.py --source data/raw/reviews.jsonl --recreate
+   ```
+6. `uv run uvicorn api.main:app --port 8000`, then
+   `curl -s localhost:8000/ask -H 'Content-Type: application/json' -d '{"question": "How do reviewers rate the grip of the TrailForge trail running shoes?"}'`
+   returns a cited answer from the full LangGraph agent.
+7. Optional: `uv run streamlit run apps/ui/streamlit_app.py` opens the UI.
 
 ## Dataset
 
-Reviews come from **[McAuley-Lab/Amazon-Reviews-2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023)**, category `All_Beauty`. Download with:
+Reviews come from **[McAuley-Lab/Amazon-Reviews-2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023)**, category `Sports_and_Outdoors`. Download with:
 
 ```bash
-uv run python scripts/download_dataset.py   # -> data/raw/reviews.jsonl (~11k reviews, 600 products)
+uv run python scripts/download_dataset.py   # -> data/raw/reviews.jsonl (12,000 reviews, 558 products)
 ```
 
 **Why this dataset.** The earlier candidate, `mteb/amazon_reviews_multi`, is a *sentiment-classification* benchmark: it keeps only review text plus a star label and strips `product_id`, product name and timestamp. That makes the agent's per-product / per-period analysis (plan → retrieve → cluster → summarize *for a given product*) impossible. The McAuley 2023 dataset keeps `parent_asin` (→ `product_id`), `timestamp` (→ `created_at`) and a metadata table with product titles.
@@ -49,20 +55,25 @@ uv run python scripts/download_dataset.py   # -> data/raw/reviews.jsonl (~11k re
 **Data is not included in this repository.** Amazon Reviews 2023 is a research-only
 dataset — this repo does not redistribute it. Run `download_dataset.py` (above) to
 build your own local `data/raw/reviews.jsonl`, or use the small committed
-`data/raw/sample_reviews.jsonl` (50 real, hand-checked reviews across 10 products) to
-try the pipeline offline without downloading anything. Full attribution: Hou et al.,
+`data/raw/sample_reviews.jsonl` (50 synthetic reviews across 10 invented products, in the
+same schema) to try the pipeline offline without downloading anything. The keyless CI eval
+gate runs on this sample. Full attribution: Hou et al.,
 *"Bridging Language and Items for Retrieval and Recommendation"*, 2024 — dataset card
 at [huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023).
 
 ## Key Metrics
 
-| Metric | Target |
-|--------|--------|
-| Faithfulness | ≥ 0.85 |
-| Citation precision | ≥ 0.70 |
-| Groundedness | ≥ 0.85 |
-| p95 latency | < 8s |
-| Cost per request | < $0.02 (free tier: $0) |
+| Metric | Target | Measured |
+|--------|--------|----------|
+| Faithfulness (LLM judge) | ≥ 0.85 | **0.90** ✅ |
+| Citation precision | ≥ 0.70 | **0.59** ❌ |
+| Sentences with citations | ≥ 0.85 | **0.84** ≈ |
+| p95 latency (`/ask`) | < 8s | **11.1 s** (p50 10.2 s) ❌ |
+| Cost per answer | < $0.02 (free tier: $0) | **$0.002** ✅ |
+
+Full-agent eval on 35 golden-set cases over the full corpus (12,056 chunks), hybrid
+retrieval, `gemini-3.1-flash-lite`. Methodology, the BM25-only ablation and what the
+misses mean: [docs/evals/](docs/evals/README.md).
 
 ## Observability
 
@@ -127,8 +138,8 @@ graph TD
 # Install all workspace dependencies
 uv sync --all-packages
 
-# Start infrastructure (Qdrant + Postgres)
-docker compose up -d postgres qdrant
+# Start infrastructure (Qdrant + Postgres + Redis)
+docker compose up -d postgres qdrant redis
 
 # Run linter
 uv run ruff check .
@@ -139,15 +150,17 @@ uv run pytest tests/unit/
 # Index reviews dataset into Qdrant
 uv run python scripts/index.py --source data/raw/reviews.jsonl
 
-# Run eval on golden set (BM25-only, no Qdrant needed)
-uv run python scripts/run_eval.py \
-  --golden-set packages/evals/data/golden_set_v0.jsonl \
-  --data-path data/raw/reviews.jsonl \
-  --output eval_results.json \
-  --skip-faithfulness
+# Keyless retrieval gate on the bundled sample (what CI runs)
+uv run python scripts/run_eval.py --golden-set golden_set_sample \
+  --data-path data/raw/sample_reviews.jsonl --retrieval-only --min-hit-rate 0.8
+
+# Full agent eval on the real corpus (needs POC_GEMINI_API_KEY + indexed Qdrant)
+uv run python scripts/run_eval.py --golden-set golden_set_v2 \
+  --data-path data/raw/reviews.jsonl --agent \
+  --metrics citation_precision,groundedness_heuristic,faithfulness,answer_relevance
 
 # Start the API server
-uv run python apps/api/src/api/main.py
+uv run uvicorn api.main:app --port 8000
 ```
 
 ## Environment variables

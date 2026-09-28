@@ -205,6 +205,10 @@ class TestClusterNode:
         assert _assign_cluster("the price is great value for money") == "value"
         assert _assign_cluster("xyzzy nothing matches here") == "other"
 
+    def test_performance_covers_general_outdoor_gear(self) -> None:
+        assert _assign_cluster("the tent stayed waterproof and sturdy all night") == "performance"
+        assert _assign_cluster("lightweight bottle, stable on the trail") == "performance"
+
     async def test_groups_chunks_into_themes(self) -> None:
         node = make_cluster_node(MagicMock(), "test-model")
         state = _make_state(

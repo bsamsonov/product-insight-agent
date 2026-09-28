@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-import re
 
+from poc.agent.citations import cited_chunk_ids
 from poc.agent.state import AgentState
 from poc.core.models import Answer, Citation
 from poc.llm.budget import BudgetExceededError
@@ -10,8 +10,6 @@ from poc.llm.provider import LLMMessage, LLMProvider
 from pydantic import BaseModel
 
 _log = logging.getLogger(__name__)
-
-_CITATION_RE = re.compile(r"\[([^\]]+)\]")
 
 _JUDGE_THRESHOLD = 0.6  # below this → needs human review
 _ESCALATE_THRESHOLD = 0.5  # below this → re-judge once with the stronger escalate model
@@ -25,12 +23,9 @@ class JudgeResult(BaseModel):
 
 def _extract_citations(text: str, retrieved: list[dict]) -> list[Citation]:
     chunk_map = {c["chunk_id"]: c for c in retrieved}
-    cited_ids = _CITATION_RE.findall(text)
-    seen: set[str] = set()
     citations: list[Citation] = []
-    for cid in cited_ids:
-        if cid in chunk_map and cid not in seen:
-            seen.add(cid)
+    for cid in cited_chunk_ids(text):
+        if cid in chunk_map:
             c = chunk_map[cid]
             citations.append(
                 Citation(

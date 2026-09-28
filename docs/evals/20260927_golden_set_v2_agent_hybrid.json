@@ -1,0 +1,527 @@
+{
+  "timestamp": "2026-09-27T10:15:10.818065+00:00",
+  "label": "Hybrid",
+  "golden_set": "golden_set_v2",
+  "pipeline": "agent",
+  "metrics_summary": {
+    "citation_precision": {
+      "mean": 0.589,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "groundedness_heuristic": {
+      "mean": 0.8363,
+      "min": 0.2727,
+      "max": 1.0
+    },
+    "faithfulness": {
+      "mean": 0.8959,
+      "min": 0.6,
+      "max": 1.0
+    }
+  },
+  "summary": {
+    "total_cases": 35,
+    "errors": 0,
+    "metric_failures": {},
+    "substring_match_rate": 0.4857,
+    "latency_p50_ms": 13346,
+    "latency_p95_ms": 53478,
+    "mean_cost_usd": 0.002055,
+    "total_cost_usd": 0.071929
+  },
+  "provider": "gemini",
+  "model": "gemini-3.1-flash-lite",
+  "per_case": [
+    {
+      "id": "q001",
+      "question": "How do reviewers describe the sizing and fit of the NCAA Arkansas Razorbacks Dog T-Shirt?",
+      "scores": {
+        "citation_precision": 0.5,
+        "groundedness_heuristic": 1.0,
+        "faithfulness": 0.9166666666666666
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 24427,
+      "cost_usd": 0.0021565,
+      "error": null
+    },
+    {
+      "id": "q002",
+      "question": "How do customers describe the quality and fit of the Ultra Game NFL Womens Active Soft?",
+      "scores": {
+        "citation_precision": 0.1111111111111111,
+        "groundedness_heuristic": 0.875,
+        "faithfulness": 0.75
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 16853,
+      "cost_usd": 0.00189725,
+      "error": null
+    },
+    {
+      "id": "q003",
+      "question": "Are there complaints or problems mentioned about the Reaction Tackle Braided Fishing Line?",
+      "scores": {
+        "citation_precision": 0.6666666666666666,
+        "groundedness_heuristic": 0.9090909090909091,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 12030,
+      "cost_usd": 0.00224925,
+      "error": null
+    },
+    {
+      "id": "q004",
+      "question": "Do reviewers feel the GSI Outdoors Percolator Coffee Pot is good value for the price?",
+      "scores": {
+        "citation_precision": 0.875,
+        "groundedness_heuristic": 1.0,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 14322,
+      "cost_usd": 0.00236075,
+      "error": null
+    },
+    {
+      "id": "q005",
+      "question": "What do customers say about using the Franklin Sports Baseball + Softball Gloves?",
+      "scores": {
+        "citation_precision": 0.5555555555555556,
+        "groundedness_heuristic": 1.0,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 23175,
+      "cost_usd": 0.00241825,
+      "error": null
+    },
+    {
+      "id": "q006",
+      "question": "What do reviewers say about the fit of the 90 Degree By Reflex High Waist?",
+      "scores": {
+        "citation_precision": 0.5,
+        "groundedness_heuristic": 0.8,
+        "faithfulness": 0.8666666666666667
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 26492,
+      "cost_usd": 0.002434,
+      "error": null
+    },
+    {
+      "id": "q007",
+      "question": "How do customers describe the quality and material of the M MOYOOGA Camo Seamless Leggings?",
+      "scores": {
+        "citation_precision": 0.5,
+        "groundedness_heuristic": 0.9,
+        "faithfulness": 0.6153846153846154
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 55684,
+      "cost_usd": 0.002046,
+      "error": null
+    },
+    {
+      "id": "q008",
+      "question": "Are there complaints or problems mentioned about the BASSDASH UPF 50+ UV Sun Protection?",
+      "scores": {
+        "citation_precision": 0.3333333333333333,
+        "groundedness_heuristic": 1.0,
+        "faithfulness": 0.6666666666666666
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 40680,
+      "cost_usd": 0.00171125,
+      "error": null
+    },
+    {
+      "id": "q009",
+      "question": "Do reviewers feel the Tube 26 x 1.95-2.125 Schrader Valve is good value for the price?",
+      "scores": {
+        "citation_precision": 0.625,
+        "groundedness_heuristic": 0.7777777777777778,
+        "faithfulness": 0.8571428571428571
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 43155,
+      "cost_usd": 0.0016614999999999998,
+      "error": null
+    },
+    {
+      "id": "q010",
+      "question": "What do customers say about using the Birchwood Casey Truoil Gun Stock Finish?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 1.0,
+        "faithfulness": 0.8333333333333334
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 53478,
+      "cost_usd": 0.002595,
+      "error": null
+    },
+    {
+      "id": "q011",
+      "question": "What do reviewers say about the strength of the Piscifun Onyx Braided Fishing Line?",
+      "scores": {
+        "citation_precision": 0.8333333333333334,
+        "groundedness_heuristic": 0.9,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 52888,
+      "cost_usd": 0.00245475,
+      "error": null
+    },
+    {
+      "id": "q012",
+      "question": "How do customers describe the quality of the Champion Kids Clothes Sweatshirts Youth Heritage?",
+      "scores": {
+        "citation_precision": 0.7142857142857143,
+        "groundedness_heuristic": 0.8,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 26055,
+      "cost_usd": 0.00195075,
+      "error": null
+    },
+    {
+      "id": "q013",
+      "question": "Are there complaints or problems mentioned about the DuPont Teflon Snow and Ice Repellant?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 0.5,
+        "faithfulness": 0.7272727272727273
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 15661,
+      "cost_usd": 0.0019277499999999998,
+      "error": null
+    },
+    {
+      "id": "q014",
+      "question": "Do reviewers feel the Liberty Imports Pack of 5 Men's is good value for the price?",
+      "scores": {
+        "citation_precision": 0.16666666666666666,
+        "groundedness_heuristic": 0.875,
+        "faithfulness": 0.7272727272727273
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 12376,
+      "cost_usd": 0.00171775,
+      "error": null
+    },
+    {
+      "id": "q015",
+      "question": "What do customers say about using the Speedo?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 0.6666666666666666,
+        "faithfulness": 0.7692307692307693
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 12445,
+      "cost_usd": 0.00197525,
+      "error": null
+    },
+    {
+      "id": "q016",
+      "question": "What do reviewers say about the PSKOOK Survival Paracord Parachute Fire Cord?",
+      "scores": {
+        "citation_precision": 0.5555555555555556,
+        "groundedness_heuristic": 1.0,
+        "faithfulness": 0.6
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 11159,
+      "cost_usd": 0.00265225,
+      "error": null
+    },
+    {
+      "id": "q017",
+      "question": "How do customers describe the quality of the Contraband Black Label 5050 Mens Basic gloves?",
+      "scores": {
+        "citation_precision": 0.2857142857142857,
+        "groundedness_heuristic": 0.9,
+        "faithfulness": 0.6363636363636364
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 10088,
+      "cost_usd": 0.0017122499999999998,
+      "error": null
+    },
+    {
+      "id": "q018",
+      "question": "Are there complaints or problems mentioned about the Vmini Half Gallon Water Bottle?",
+      "scores": {
+        "citation_precision": 0.125,
+        "groundedness_heuristic": 0.9,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 11311,
+      "cost_usd": 0.0021985,
+      "error": null
+    },
+    {
+      "id": "q019",
+      "question": "Do reviewers feel the NFL Playing Cards is good value for the price?",
+      "scores": {
+        "citation_precision": 0.5,
+        "groundedness_heuristic": 0.8,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 14467,
+      "cost_usd": 0.001791,
+      "error": null
+    },
+    {
+      "id": "q020",
+      "question": "What do customers say about using the FOCO Men's NCAA College Team Logo?",
+      "scores": {
+        "citation_precision": 0.0,
+        "groundedness_heuristic": 0.5454545454545454,
+        "faithfulness": 0.875
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 13593,
+      "cost_usd": 0.0018435,
+      "error": null
+    },
+    {
+      "id": "q021",
+      "question": "What do reviewers say about the fit and comfort of the Cestyle Womens Sleeveless Scoop Neck Flowy top?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 0.8888888888888888,
+        "faithfulness": 0.9
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 17230,
+      "cost_usd": 0.00191325,
+      "error": null
+    },
+    {
+      "id": "q022",
+      "question": "How do customers describe the quality of the Wepro Bands Compatible with Fitbit Charge?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 1.0,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 10538,
+      "cost_usd": 0.0020815,
+      "error": null
+    },
+    {
+      "id": "q023",
+      "question": "Are there complaints or problems mentioned about the CompressionZ Compression Capri Leggings for Women?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 0.9,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 14764,
+      "cost_usd": 0.00193325,
+      "error": null
+    },
+    {
+      "id": "q024",
+      "question": "Do reviewers feel the KastKing SuperPower Braided Fishing Line is good value for the price?",
+      "scores": {
+        "citation_precision": 0.6666666666666666,
+        "groundedness_heuristic": 1.0,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 13456,
+      "cost_usd": 0.00230725,
+      "error": null
+    },
+    {
+      "id": "q025",
+      "question": "What do customers say about using the Champion Sports Exercise Medicine Balls?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 0.9090909090909091,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 10811,
+      "cost_usd": 0.0024785,
+      "error": null
+    },
+    {
+      "id": "q026",
+      "question": "What do reviewers say about the Top Glides Precut Walker Tennis Balls?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 0.9090909090909091,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 9164,
+      "cost_usd": 0.00219525,
+      "error": null
+    },
+    {
+      "id": "q027",
+      "question": "How do customers describe how they feel after using the LifePro Waver Vibration Plate Exercise Machine?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 0.8888888888888888,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 10738,
+      "cost_usd": 0.00196025,
+      "error": null
+    },
+    {
+      "id": "q028",
+      "question": "Are there complaints or problems mentioned about the FOCO NFL Resin 11.5\" Team Logo?",
+      "scores": {
+        "citation_precision": 0.0,
+        "groundedness_heuristic": 0.3333333333333333,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 9309,
+      "cost_usd": 0.00150075,
+      "error": null
+    },
+    {
+      "id": "q029",
+      "question": "Do reviewers feel the 625lb Fishing Magnet Bundle Pack is good value for the price?",
+      "scores": {
+        "citation_precision": 0.0,
+        "groundedness_heuristic": 0.2727272727272727,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 5,
+      "substring_match": false,
+      "latency_ms": 5266,
+      "cost_usd": 0.001235,
+      "error": null
+    },
+    {
+      "id": "q030",
+      "question": "What do customers say about using the Gaiam Yoga Mat?",
+      "scores": {
+        "citation_precision": 0.7777777777777778,
+        "groundedness_heuristic": 0.6363636363636364,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 9962,
+      "cost_usd": 0.00209325,
+      "error": null
+    },
+    {
+      "id": "q031",
+      "question": "What do reviewers say about the fit and quality of the NFL Men's OTS All-Star Adjustable Hat?",
+      "scores": {
+        "citation_precision": 0.2,
+        "groundedness_heuristic": 0.9,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 11800,
+      "cost_usd": 0.002418,
+      "error": null
+    },
+    {
+      "id": "q032",
+      "question": "How do customers describe the quality and durability of the FAMI Outdoor Tactical Bag Backpack?",
+      "scores": {
+        "citation_precision": 0.25,
+        "groundedness_heuristic": 0.8888888888888888,
+        "faithfulness": 0.8888888888888888
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 9784,
+      "cost_usd": 0.00208375,
+      "error": null
+    },
+    {
+      "id": "q033",
+      "question": "Are there complaints or problems mentioned about the Velox Rim Tape (2-Pack)?",
+      "scores": {
+        "citation_precision": 1.0,
+        "groundedness_heuristic": 0.8888888888888888,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 9330,
+      "cost_usd": 0.00183675,
+      "error": null
+    },
+    {
+      "id": "q034",
+      "question": "Do reviewers feel the Exercise Bike Trainer is good value for the price?",
+      "scores": {
+        "citation_precision": 0.375,
+        "groundedness_heuristic": 0.8888888888888888,
+        "faithfulness": 0.7272727272727273
+      },
+      "retrieved_count": 10,
+      "substring_match": true,
+      "latency_ms": 9547,
+      "cost_usd": 0.002031,
+      "error": null
+    },
+    {
+      "id": "q035",
+      "question": "What do customers say about using the Andyshi Gloves Men Women Winter Outdoor?",
+      "scores": {
+        "citation_precision": 0.5,
+        "groundedness_heuristic": 0.8181818181818182,
+        "faithfulness": 1.0
+      },
+      "retrieved_count": 10,
+      "substring_match": false,
+      "latency_ms": 13346,
+      "cost_usd": 0.0021072499999999997,
+      "error": null
+    }
+  ]
+}

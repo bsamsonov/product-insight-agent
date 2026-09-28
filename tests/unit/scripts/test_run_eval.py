@@ -18,7 +18,12 @@ _SCRIPTS_DIR = Path(__file__).parents[3] / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from poc.evals.runner import EvalCase  # noqa: E402
-from run_eval import _run_retrieval_only, compute_hit  # noqa: E402
+from run_eval import (  # noqa: E402
+    _record_llm_metric,
+    _run_retrieval_only,
+    compute_hit,
+    latency_cost_summary,
+)
 
 
 @dataclass
@@ -138,3 +143,52 @@ async def test_run_retrieval_only_exits_zero_when_no_cases_below_threshold_is_mo
             min_hit_rate=0.8,
         )
     assert exc_info.value.exit_code == 1
+
+
+def _result(latency_ms: int, cost: float | None, error: str | None = None):
+    from poc.evals.runner import EvalResult
+
+    return EvalResult(
+        case_id="c",
+        question="q",
+        answer_text="a",
+        cited_chunk_ids=[],
+        faithfulness_score=0.0,
+        citation_precision_score=0.0,
+        substring_match=True,
+        latency_ms=latency_ms,
+        cost_usd=cost,
+        error=error,
+    )
+
+
+def test_latency_cost_summary_percentiles_and_cost():
+    results = [_result(ms, 0.001) for ms in range(100, 2100, 100)]  # 20 cases
+    results.append(_result(99_999, 5.0, error="boom"))  # errors are excluded
+    summary = latency_cost_summary(results)
+    assert summary["latency_p50_ms"] == 1000
+    assert summary["latency_p95_ms"] == 1900
+    assert summary["mean_cost_usd"] == 0.001
+    assert summary["total_cost_usd"] == 0.02
+
+
+def test_latency_cost_summary_empty():
+    assert latency_cost_summary([]) == {
+        "latency_p50_ms": 0,
+        "latency_p95_ms": 0,
+        "mean_cost_usd": 0.0,
+        "total_cost_usd": 0.0,
+    }
+
+
+def test_failed_llm_metric_is_counted_not_scored():
+    from poc.evals.metrics import MetricResult
+
+    scores: dict[str, float] = {}
+    failures: dict[str, int] = {}
+    ok = MetricResult(name="faithfulness", score=0.9, reasoning="fine")
+    bad = MetricResult(name="faithfulness", score=0.0, reasoning="eval error: Rate limit")
+    _record_llm_metric(scores, failures, "faithfulness", ok)
+    _record_llm_metric(scores, failures, "answer_relevance", bad)
+    assert scores == {"faithfulness": 0.9}
+    assert failures == {"answer_relevance": 1}

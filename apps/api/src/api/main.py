@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, Header
+from fastapi import FastAPI
 from poc.audit.logger import AuditEvent, AuditLogger
 from poc.audit.settings import AuditSettings
 from poc.audit.store import PostgresAuditStore
-from poc.core.tenant import current_tenant_token, reset_tenant
+from poc.core.tenant import get_tenant
 from poc.guardrails.input_checks import check_input
 from poc.llm.registry import REGISTRY, get_provider
 from poc.llm.settings import LLMSettings
@@ -195,8 +195,12 @@ app.add_middleware(TenantMiddleware)
 
 
 class AskRequest(BaseModel):
+    """/ask body. The tenant is NOT part of the body — send the X-Tenant-Id header.
+
+    Unknown fields (including a legacy ``tenant``) are ignored by pydantic.
+    """
+
     question: str
-    tenant: str = "default"
     filters: dict[str, Any] = {}
     model: str | None = None
 
@@ -227,109 +231,47 @@ async def health() -> HealthResponse:
 
 
 @app.post("/ask", response_model=AskResponse)
-async def ask(
-    req: AskRequest,
-    x_tenant: str | None = Header(default=None),
-) -> AskResponse:
+async def ask(req: AskRequest) -> AskResponse:
     start_ms = int(time.time() * 1000)
 
-    # Resolve tenant from header > body > default
-    tenant = x_tenant or req.tenant or "default"
-    token = current_tenant_token(tenant)
+    # The tenant comes ONLY from TenantMiddleware, which validated the X-Tenant-Id
+    # header against POC_ALLOWED_TENANTS and bound it to the ContextVar. Never take
+    # it from the request body or another header: an unvalidated tenant would reach
+    # the audit log, Langfuse and the per-tenant daily budget (budget bypass).
+    tenant = get_tenant()
     audit: AuditLogger | PostgresAuditStore = _state["audit"]
 
-    try:
-        # Guardrails: input check
-        guard = check_input(req.question)
-        if not guard.passed:
-            await audit.log(
-                AuditEvent(
-                    event_type="input_rejected",
-                    tenant=tenant,
-                    data={"violations": guard.violations, "question": req.question[:200]},
-                )
+    # Guardrails: input check
+    guard = check_input(req.question)
+    if not guard.passed:
+        await audit.log(
+            AuditEvent(
+                event_type="input_rejected",
+                tenant=tenant,
+                data={"violations": guard.violations, "question": req.question[:200]},
             )
-            # Spec S4.T5: a blocked request is a *refusal*, not a client error.
-            # Raise GuardrailViolation so the handler returns 200 {status: refused,
-            # reason: guardrail.<reason>} instead of a 4xx/5xx. `passed` is False
-            # only for prompt-injection (PII is redacted, not blocked).
-            reason = next(
-                (v.split(":", 1)[0] for v in guard.violations if v.startswith("prompt_injection")),
-                "input_rejected",
-            )
-            raise GuardrailViolation(reason)
+        )
+        # Spec S4.T5: a blocked request is a *refusal*, not a client error.
+        # Raise GuardrailViolation so the handler returns 200 {status: refused,
+        # reason: guardrail.<reason>} instead of a 4xx/5xx. `passed` is False
+        # only for prompt-injection (PII is redacted, not blocked).
+        reason = next(
+            (v.split(":", 1)[0] for v in guard.violations if v.startswith("prompt_injection")),
+            "input_rejected",
+        )
+        raise GuardrailViolation(reason)
 
-        sanitized_q = guard.sanitized_text
-        agent = _state.get("agent")
+    sanitized_q = guard.sanitized_text
+    agent = _state.get("agent")
 
-        if agent is not None:
-            # Preferred path: run the full LangGraph pipeline. ProductInsightAgent.run()
-            # opens the `agent.run` root span; each node is @traced (agent.intent…judge)
-            # and every LLM call opens an `llm.generate` child span — so Langfuse renders
-            # one trace per /ask with the node tree and per-generation tokens/cost.
-            result = await agent.ask(sanitized_q, tenant=tenant, filters=req.filters or None)
-            answer = result.answer
-            answer_model = answer.model or REGISTRY[_state["provider_name"]].default_model
-            latency_ms = int(time.time() * 1000) - start_ms
-
-            await audit.log(
-                AuditEvent(
-                    event_type="ask",
-                    tenant=tenant,
-                    data={
-                        "question": sanitized_q[:200],
-                        "model": answer_model,
-                        "needs_human_review": result.needs_human_review,
-                        "cost_usd": answer.cost_usd,
-                        "latency_ms": latency_ms,
-                    },
-                )
-            )
-
-            return AskResponse(
-                answer=answer.text,
-                citations=[c.model_dump() for c in answer.citations],
-                model=answer_model,
-                cost_usd=answer.cost_usd,
-                latency_ms=latency_ms,
-                intent=result.intent,
-                judge_score=result.judge_score,
-                groundedness=result.groundedness,
-                needs_human_review=result.needs_human_review,
-            )
-
-        # Fallback path: retrieval stack unavailable → single direct LLM call, still
-        # wrapped in an `agent.run` root span so one trace per /ask reaches Langfuse.
-        provider = _state["provider"]
-        from poc.llm.provider import LLMMessage
-
-        messages = [
-            LLMMessage(
-                role="system",
-                content=(
-                    "You are a product insight analyst. "
-                    "Answer questions about product reviews concisely and factually."
-                ),
-            ),
-            LLMMessage(role="user", content=sanitized_q),
-        ]
-
-        model = req.model or REGISTRY[_state["provider_name"]].default_model
-
-        tracer = get_tracer()
-        with tracer.start_as_current_span("agent.run") as span:
-            span.set_attribute("tenant", tenant)
-            span.set_attribute("question.length", len(sanitized_q))
-            langfuse_client.set_trace_attributes(
-                span,
-                name="agent.run",
-                user_id=tenant,
-                tags=["direct-llm"],
-                input={"question": sanitized_q},
-            )
-            response = await provider.complete(messages, model=model, max_tokens=800)
-            langfuse_client.set_trace_attributes(span, output=response.content)
-
+    if agent is not None:
+        # Preferred path: run the full LangGraph pipeline. ProductInsightAgent.run()
+        # opens the `agent.run` root span; each node is @traced (agent.intent…judge)
+        # and every LLM call opens an `llm.generate` child span — so Langfuse renders
+        # one trace per /ask with the node tree and per-generation tokens/cost.
+        result = await agent.ask(sanitized_q, tenant=tenant, filters=req.filters or None)
+        answer = result.answer
+        answer_model = answer.model or REGISTRY[_state["provider_name"]].default_model
         latency_ms = int(time.time() * 1000) - start_ms
 
         await audit.log(
@@ -338,22 +280,79 @@ async def ask(
                 tenant=tenant,
                 data={
                     "question": sanitized_q[:200],
-                    "model": model,
-                    "cost_usd": response.cost_usd,
+                    "model": answer_model,
+                    "needs_human_review": result.needs_human_review,
+                    "cost_usd": answer.cost_usd,
                     "latency_ms": latency_ms,
                 },
             )
         )
 
         return AskResponse(
-            answer=response.content,
-            model=model,
-            cost_usd=response.cost_usd,
+            answer=answer.text,
+            citations=[c.model_dump() for c in answer.citations],
+            model=answer_model,
+            cost_usd=answer.cost_usd,
             latency_ms=latency_ms,
+            intent=result.intent,
+            judge_score=result.judge_score,
+            groundedness=result.groundedness,
+            needs_human_review=result.needs_human_review,
         )
 
-    finally:
-        reset_tenant(token)
+    # Fallback path: retrieval stack unavailable → single direct LLM call, still
+    # wrapped in an `agent.run` root span so one trace per /ask reaches Langfuse.
+    provider = _state["provider"]
+    from poc.llm.provider import LLMMessage
+
+    messages = [
+        LLMMessage(
+            role="system",
+            content=(
+                "You are a product insight analyst. "
+                "Answer questions about product reviews concisely and factually."
+            ),
+        ),
+        LLMMessage(role="user", content=sanitized_q),
+    ]
+
+    model = req.model or REGISTRY[_state["provider_name"]].default_model
+
+    tracer = get_tracer()
+    with tracer.start_as_current_span("agent.run") as span:
+        span.set_attribute("tenant", tenant)
+        span.set_attribute("question.length", len(sanitized_q))
+        langfuse_client.set_trace_attributes(
+            span,
+            name="agent.run",
+            user_id=tenant,
+            tags=["direct-llm"],
+            input={"question": sanitized_q},
+        )
+        response = await provider.complete(messages, model=model, max_tokens=800)
+        langfuse_client.set_trace_attributes(span, output=response.content)
+
+    latency_ms = int(time.time() * 1000) - start_ms
+
+    await audit.log(
+        AuditEvent(
+            event_type="ask",
+            tenant=tenant,
+            data={
+                "question": sanitized_q[:200],
+                "model": model,
+                "cost_usd": response.cost_usd,
+                "latency_ms": latency_ms,
+            },
+        )
+    )
+
+    return AskResponse(
+        answer=response.content,
+        model=model,
+        cost_usd=response.cost_usd,
+        latency_ms=latency_ms,
+    )
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

@@ -26,8 +26,9 @@ flowchart LR
 
 1. `cp .env.example .env` and set `POC_GEMINI_API_KEY` (free at [aistudio.google.com](https://aistudio.google.com/apikey)).
 2. `uv sync --all-packages` installs all workspace packages.
-3. `docker compose up -d qdrant redis postgres` starts the core infrastructure. Add Langfuse
-   later if you want traces (see [docs/observability.md](docs/observability.md)).
+3. `docker compose up -d` starts the core infrastructure (Qdrant, Redis, Postgres). Langfuse
+   tracing is an optional compose profile: `docker compose --profile observability up -d`
+   (see [docs/observability.md](docs/observability.md)).
 4. `uv run ask "Say hello"` runs a provider smoke test: one direct LLM call, no retrieval.
 5. Index a corpus. You can use the bundled sample (instant) or download the full dataset:
    ```bash
@@ -139,7 +140,9 @@ graph TD
 uv sync --all-packages
 
 # Start infrastructure (Qdrant + Postgres + Redis)
-docker compose up -d postgres qdrant redis
+docker compose up -d
+# ... plus Langfuse tracing (ClickHouse, MinIO, Langfuse)
+docker compose --profile observability up -d
 
 # Run linter
 uv run ruff check .

@@ -1,6 +1,31 @@
 # Product Insight Agent — POC
 
+[![CI](https://github.com/bsamsonov/product-insight-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/bsamsonov/product-insight-agent/actions/workflows/ci.yml)
+[![Eval](https://github.com/bsamsonov/product-insight-agent/actions/workflows/eval.yml/badge.svg)](https://github.com/bsamsonov/product-insight-agent/actions/workflows/eval.yml)
+![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 An AI-powered agent that analyses product reviews and surfaces actionable insights using a hybrid retrieval + LangGraph agentic pipeline.
+
+> **About.** A personal R&D proof of concept: an end-to-end agentic RAG system built to
+> explore what it takes to run one responsibly: grounded answers with citations, measured
+> quality, cost control and observability. Not a production service; known gaps are listed
+> honestly in the metrics table below and in [ROADMAP.md](ROADMAP.md).
+
+**Highlights**
+
+- **LangGraph agent** — intent → plan (metadata filters) → hybrid retrieval → keyword
+  clustering → cited summary → LLM judge → groundedness check → human-review flag when
+  confidence is low.
+- **Hybrid retrieval** — Qdrant dense vectors + BM25, both built from the same recorded corpus.
+- **Evals** — keyless retrieval smoke-gate on every PR plus a manual LLM-judge run;
+  measured numbers (including the misses) published in [docs/evals/](docs/evals/README.md).
+- **Cost and safety controls** — per-request and per-tenant-day budget caps, Redis rate
+  limit, PII / prompt-injection guardrails, `X-Tenant-Id` allowlist, audit log.
+- **Observability** — OpenTelemetry spans exported to Langfuse with per-node cost, tokens
+  and quality scores.
+
+![Streamlit demo: a cited answer with judge and groundedness scores](docs/images/streamlit-demo.png)
 
 ```mermaid
 flowchart LR
@@ -235,6 +260,7 @@ packages/
 
 | Document | Description |
 |----------|-------------|
+| [`ROADMAP.md`](ROADMAP.md) | Known gaps and next steps |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records (8 ADRs) |
 | [`docs/observability.md`](docs/observability.md) | Tracing design, Langfuse setup, scores |
 | [`docs/cost-model.md`](docs/cost-model.md) | Cost projections at various QPS levels |

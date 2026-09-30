@@ -117,3 +117,13 @@ class TestGroundednessNode:
 
         # high groundedness → node doesn't touch the flag; prior True survives in state
         assert "needs_human_review" not in result
+
+
+async def test_unparseable_checker_output_is_unknown_not_escalated() -> None:
+    llm = _mock_llm("not json at all")
+    node = make_groundedness_node(llm, "test-model")
+    result = await node(_make_state())
+
+    assert result["judgement"]["groundedness"] is None
+    assert "needs_human_review" not in result
+    assert result["traces"][-1]["unavailable"] is True

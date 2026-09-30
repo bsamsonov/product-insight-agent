@@ -37,9 +37,19 @@ flowchart LR
    # or: uv run python scripts/download_dataset.py && \
    #     uv run python scripts/index.py --source data/raw/reviews.jsonl --recreate
    ```
-6. `uv run uvicorn api.main:app --port 8000`, then
-   `curl -s localhost:8000/ask -H 'Content-Type: application/json' -d '{"question": "How do reviewers rate the grip of the TrailForge trail running shoes?"}'`
-   returns a cited answer from the full LangGraph agent.
+   The collection remembers which file it was built from; the API builds its BM25 index from
+   the same file, so dense and keyword search always see one corpus (override with
+   `POC_CORPUS_PATH`). Switching corpora needs `--recreate`.
+6. `uv run uvicorn api.main:app --port 8000`, then ask a question about the indexed corpus:
+   ```bash
+   # bundled sample
+   curl -s localhost:8000/ask -H 'Content-Type: application/json' \
+     -d '{"question": "How do reviewers rate the grip of the TrailForge trail running shoes?"}'
+   # full dataset
+   curl -s localhost:8000/ask -H 'Content-Type: application/json' \
+     -d '{"question": "Do reviewers feel the GSI Outdoors Percolator Coffee Pot is good value for the price?"}'
+   ```
+   Either returns a cited answer from the full LangGraph agent.
 7. Optional: `uv run streamlit run apps/ui/streamlit_app.py` opens the UI.
 
 ## Dataset

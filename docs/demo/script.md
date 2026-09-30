@@ -25,14 +25,18 @@ Say: "The system has [walk through each component]: Guardrails block injection a
 
 Show: terminal
 
-Run (API started with `uv run uvicorn api.main:app --port 8000`, corpus indexed):
+Run (full dataset indexed with `scripts/index.py --source data/raw/reviews.jsonl --recreate`,
+API started with `uv run uvicorn api.main:app --port 8000`):
 ```bash
 curl -s localhost:8000/ask -H 'Content-Type: application/json' \
-  -d '{"question": "How do reviewers rate the grip of the TrailForge trail running shoes?"}'
+  -d '{"question": "Do reviewers feel the GSI Outdoors Percolator Coffee Pot is good value for the price?"}'
 ```
 
-Say: "This runs the full LangGraph agent against the real Gemini API: retrieval over the
-indexed reviews, clustering, a cited summary, then judge and groundedness checks. The JSON
+(With only the bundled sample indexed, ask about a sample product instead, e.g.
+"How do reviewers rate the grip of the TrailForge trail running shoes?")
+
+Say: "This runs the full LangGraph agent against the real Gemini API: retrieval over 12,000
+real Amazon reviews, clustering, a cited summary, then judge and groundedness checks. The JSON
 carries the citations, the judge verdict and the token cost — $0 on the free tier."
 
 (`uv run ask "..."` is only a provider smoke test — one direct LLM call, no retrieval — so

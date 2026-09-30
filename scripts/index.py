@@ -10,6 +10,9 @@ import typer
 app = typer.Typer(help="Index documents into Qdrant vector store.")
 _log = logging.getLogger(__name__)
 
+# scripts/index.py → repo root; corpus paths are recorded relative to it.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 @app.command()
 def main(
@@ -39,6 +42,7 @@ def main(
     from poc.ingestion.normalizer import normalize
     from poc.ingestion.sources.jsonl import JsonlSource
     from poc.retrieval.bge_embedder import BgeM3Embedder
+    from poc.retrieval.factory import corpus_label
     from poc.retrieval.qdrant_index import QdrantIndex
 
     _log.info("Loading embedder...")
@@ -46,6 +50,18 @@ def main(
 
     _log.info("Connecting to Qdrant at %s for tenant '%s'...", qdrant_url, tenant)
     index = QdrantIndex(embedder=embedder, qdrant_url=qdrant_url, tenant=tenant, recreate=recreate)
+
+    # One collection = one corpus: the API builds BM25 from the file recorded here, so
+    # adding a second corpus to a filled collection would silently mix the two.
+    label = corpus_label(source, _PROJECT_ROOT)
+    previous = index.corpus_source()
+    if previous is not None and previous != label and index.count() > 0:
+        typer.echo(
+            f"Collection 'reviews__{tenant}' was indexed from {previous}, not {label}. "
+            "Re-run with --recreate to replace it.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
     chunker = RecursiveTokenChunker()
     src = JsonlSource(source)
@@ -69,7 +85,10 @@ def main(
         index.upsert(all_chunks, batch_size=batch_size)
         total_chunks += len(all_chunks)
 
-    _log.info("Indexed %d chunks into collection 'reviews__%s'", total_chunks, tenant)
+    index.set_corpus_source(label)
+    _log.info(
+        "Indexed %d chunks from %s into collection 'reviews__%s'", total_chunks, label, tenant
+    )
     typer.echo(f"Done: {total_chunks} chunks indexed.")
 
 

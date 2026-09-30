@@ -15,10 +15,11 @@ flowchart LR
     Agent --> Cluster[Cluster\nAnalyzer]
     Agent --> Summarize[Summarizer]
     Agent --> Judge[Quality\nJudge]
-    Judge -->|confidence < 0.6| HITL([Human Review])
-    Judge -->|confidence >= 0.6| Response([Response\nwith Citations])
-    API --> Audit[(Audit Log\nPostgres)]
-    API --> Cache[(Redis\nCache + Rate Limit)]
+    Judge --> Grounded[Groundedness\nCheck]
+    Grounded -->|judge < 0.6 or groundedness < 0.7| HITL([Needs-review\nflag])
+    Grounded -->|otherwise| Response([Response\nwith Citations])
+    API --> Audit[(Audit Log\nJSONL or Postgres)]
+    API --> Cache[(Redis\nRate Limit;\ncache + budget with\nPOC_USE_ROUTER=1)]
     API --> Langfuse[(Langfuse\nTracing)]
 ```
 
@@ -57,8 +58,9 @@ uv run python scripts/download_dataset.py   # -> data/raw/reviews.jsonl (12,000 
 dataset — this repo does not redistribute it. Run `download_dataset.py` (above) to
 build your own local `data/raw/reviews.jsonl`, or use the small committed
 `data/raw/sample_reviews.jsonl` (50 synthetic reviews across 10 invented products, in the
-same schema) to try the pipeline offline without downloading anything. The keyless CI eval
-gate runs on this sample. Full attribution: Hou et al.,
+same schema) to try the pipeline offline without downloading anything. CI runs a keyless
+retrieval smoke-gate (hit rate, no LLM calls) on this sample; the full LLM-judge eval is a
+manual run. Full attribution: Hou et al.,
 *"Bridging Language and Items for Retrieval and Recommendation"*, 2024 — dataset card
 at [huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023).
 
@@ -69,7 +71,7 @@ at [huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023](https://huggingface
 | Faithfulness (LLM judge) | ≥ 0.85 | **0.90** ✅ |
 | Citation precision | ≥ 0.70 | **0.59** ❌ |
 | Sentences with citations | ≥ 0.85 | **0.84** ≈ |
-| p95 latency (`/ask`) | < 8s | **11.1 s** (p50 10.2 s) ❌ |
+| Latency (`/ask`, p95 target) | p95 < 8s | **max 11.1 s, p50 10.2 s** over 10 sequential requests (too few for a real p95) ❌ |
 | Cost per answer | < $0.02 (free tier: $0) | **$0.002** ✅ |
 
 Full-agent eval on 35 golden-set cases over the full corpus (12,056 chunks), hybrid
@@ -98,8 +100,9 @@ graph TD
     RET --> CLU[Cluster Node\nthematic grouping]
     CLU --> SUM[Summarize Node\nstructured answer]
     SUM --> JUDGE[Judge Node\nfaithfulness score]
-    JUDGE -->|score >= 0.6| END[Answer]
-    JUDGE -->|score < 0.6| HITL[Human Review Flag]
+    JUDGE --> GND[Groundedness Node\nper-claim check]
+    GND -->|judge >= 0.6 and groundedness >= 0.7| END[Answer]
+    GND -->|otherwise| HITL[Human Review Flag]
 
     RET --- QDRANT[(Qdrant\nvector store)]
     RET --- BM25[(BM25\nin-memory)]
@@ -107,7 +110,7 @@ graph TD
     AGT --> ROUTER[Model Router\nrole-based, per router.yaml]
     ROUTER --> LLM[OpenAI-compatible Provider\nGemini / Groq / DeepSeek / self-hosted]
 
-    AUDIT[Audit Logger\nJSONL append-only] --> AGT
+    AUDIT[Audit Logger\nJSONL default / Postgres] --> AGT
     OBS[OTel Tracing] --> AGT
 ```
 
@@ -119,13 +122,13 @@ graph TD
 | `poc-llm` | LLM provider abstraction, OpenAI-compatible adapter, model router |
 | `poc-ingestion` | JSONL ingest, normalization, token-based chunking |
 | `poc-retrieval` | BGE-M3 embedder, Qdrant index, BM25 index, hybrid RRF retrieval |
-| `poc-prompts` | YAML prompt registry with Jinja2-style rendering |
+| `poc-prompts` | YAML prompt registry, `str.format()` placeholders |
 | `poc-agent` | LangGraph state machine with intent/plan/retrieve/cluster/summarize/judge nodes |
-| `poc-evals` | Eval metrics (faithfulness, citation precision/recall), golden set runner |
+| `poc-evals` | Eval metrics (faithfulness, answer relevance, context precision/recall, citation precision, groundedness), golden set runner |
 | `poc-guardrails` | Input PII redaction, prompt injection detection, output groundedness check |
-| `poc-audit` | Append-only async audit log (JSONL) |
+| `poc-audit` | Append-only async audit log — JSONL (default) or Postgres (`POC_AUDIT_BACKEND`) |
 | `poc-observability` | OTel tracing, Langfuse export and scores, JSON logging |
-| `poc-api` | FastAPI HTTP API with tenant resolution and audit logging |
+| `poc-api` | FastAPI HTTP API: `X-Tenant-Id` allowlist, per-tenant audit / rate limit / budget (retrieval is single-tenant, see ADR-0005) |
 
 ## Requirements
 

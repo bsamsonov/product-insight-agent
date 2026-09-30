@@ -1,6 +1,6 @@
 # ADR-0006 — Redis INCRBYFLOAT for per-tenant budget tracking
 
-> Status: Accepted
+> Status: Accepted (amended 2026-09-28 — implementation description corrected)
 > Date: 2026-05-16
 > Deciders: Boris Samsonov (architect)
 
@@ -14,9 +14,9 @@ Two levels of budget control are required:
 
 1. **Per-request limit.** A single agent execution must not consume more than a configured token budget (default: 8000 tokens across all LLM calls in the graph). This prevents runaway recursive tool calls or infinite retry loops within one request.
 
-2. **Per-tenant-day limit.** Each tenant has a daily spending cap (default: $1.00/day in the POC). Requests from a tenant that has exceeded its daily budget must be rejected before any LLM call is made.
+2. **Per-tenant-day limit.** Each tenant has a daily spending cap (default: $5.00/day, `budgets.per_tenant_daily_usd` in `router.yaml`). Once a tenant has exceeded its daily budget, further LLM calls are rejected (the call that crosses the cap still completes — see Decision).
 
-The per-request limit is straightforward: `AgentState` accumulates token counts as nodes execute, and the `BudgetGuard` node checks the accumulated cost before each LLM call. This is in-process, single-threaded per request — no concurrency issues.
+The per-request limit is straightforward: a request-scoped budget context (a `contextvars` value opened by `agent.run()`, see `poc.llm.context`) accumulates the cost of every LLM call made while serving one request. This is in-process and per request — no concurrency issues.
 
 The per-tenant-day limit is harder: multiple concurrent requests from the same tenant arrive at different API workers simultaneously. A naive in-memory counter in each worker would give each worker an independent view of spending — at 4 workers, a tenant could spend 4× their daily cap before any worker detects the breach.
 
@@ -28,18 +28,18 @@ The solution requires an atomic shared counter with automatic expiry. The candid
 
 We will use **Redis `INCRBYFLOAT` with a 24-hour TTL key** for per-tenant-day budget accumulation.
 
-The key schema is `budget:{tenant_id}:{YYYY-MM-DD}` (date in UTC). On each completed LLM call, the `BudgetGuard` issues:
+The key schema is `budget:{tenant_id}:{YYYY-MM-DD}` (date from `date.today()`, treated as UTC for the POC). **After** each completed LLM call — once the real cost is known — the `BudgetGuard` issues:
 
 ```
 INCRBYFLOAT budget:{tenant_id}:{date} {cost_usd}
-EXPIREAT budget:{tenant_id}:{date} {next_midnight_unix}
+EXPIRE      budget:{tenant_id}:{date} 86400
 ```
 
-Before each LLM call, the guard issues `GET budget:{tenant_id}:{date}` and compares to the configured cap. If the cap is exceeded, the request raises `BudgetExceededError` immediately.
+and raises `BudgetExceededError` if the returned running total exceeds the daily cap. The per-request cap is checked first, in process, against the request-scoped running total. There is no separate pre-call `GET`: the counter always reflects real spend, and the call that crosses the cap is the one that fails.
 
-The Redis connection is reused from the rate-limiting pool (same Redis instance, separate key namespace). The `BudgetGuard` is implemented in `packages/guardrails/src/poc/guardrails/input_checks.py` and is invoked by the LangGraph `__before__` hook on every node that calls an LLM.
+The guard is **not** a graph node or hook. It is injected into the model router (`RoutedLLM`, see ADR-0008; active only with `POC_USE_ROUTER=1`) at API startup; `RoutedLLM.route()` calls `BudgetGuard.check_and_increment()` after every real (non-cached) provider call. Graph nodes only see the resulting `BudgetExceededError`, which the API maps to HTTP 429. The Redis instance is shared with rate limiting (separate key namespace). When `POC_REDIS_URL` is not set, the API wires the in-memory `FakeBudgetGuard` instead (single-process only).
 
-Cost is estimated from the token counts returned in the LLM API response (`usage.prompt_tokens`, `usage.completion_tokens`) and the provider's per-token price stored in `LLMSettings`.
+Cost is estimated from the token counts returned in the LLM API response (`usage.prompt_tokens`, `usage.completion_tokens`) and the per-token prices in `packages/llm/data/pricing.yaml` (`poc.llm.pricing.estimate_cost`).
 
 ---
 
@@ -56,7 +56,8 @@ Cost is estimated from the token counts returned in the LLM API response (`usage
 ### Negative consequences / risks
 
 - **Redis is a single point of failure for budget enforcement.** If Redis is unavailable, the `BudgetGuard` falls through (graceful degradation by design): LLM calls proceed without budget checking. This is the correct trade-off for a POC — denying all requests when Redis is down is worse than temporarily allowing overspend. In production, Redis Sentinel or Cluster would be required.
-- **24-hour window does not align with calendar days.** The TTL starts from the first request of the day, not from midnight. A tenant who starts using the system at 23:59 gets a fresh 24h window — their usage from 23:59 to midnight and midnight to 23:59 the next day may overlap in a single window. For a POC, this approximation is acceptable.
+- **TTL does not align with calendar days.** The key name rolls over at midnight, but `EXPIRE 86400` is refreshed on every call, so a key lives up to 24 h after its last write. This only wastes a little memory — the date in the key, not the TTL, defines the budget window.
+- **Post-charge enforcement can overshoot.** Because cost is committed after the call, N concurrent in-flight calls for a tenant near its cap can all complete before any of them sees the breach; worst-case overshoot ≈ N × max call cost. See the amendment below.
 - **No persistence across Redis restarts.** If Redis is restarted without AOF/RDB persistence enabled, daily spending counters are lost. All tenants effectively get a fresh cap on restart. In the POC Docker Compose setup, Redis is configured without persistence (acceptable for development); production would enable AOF.
 - **Cost estimation accuracy.** We estimate cost from token counts and a static per-token price. If a provider changes pricing or applies discounts (e.g., prompt caching discount), our estimate diverges from actual charges. The cap is therefore a safety approximation, not a billing guarantee.
 
@@ -80,8 +81,24 @@ Cost is estimated from the token counts returned in the LLM API response (`usage
 
 ## References
 
-- `packages/guardrails/src/poc/guardrails/input_checks.py` — `BudgetGuard` implementation
-- `packages/agent/src/poc/agent/state.py` — `AgentState.accumulated_cost_usd` per-request accumulator
+- `packages/llm/src/poc/llm/budget.py` — `BudgetGuard` / `FakeBudgetGuard`
+- `packages/llm/src/poc/llm/context.py` — request-scoped budget context (`contextvars`)
+- `packages/llm/src/poc/llm/router.py` — `RoutedLLM._charge_budget()` (enforcement point)
 - [Redis INCRBYFLOAT documentation](https://redis.io/commands/incrbyfloat/)
 - `docs/cost-model.md` — per-request cost estimates used to set default caps
 - ADR-0008 — multi-provider LLM strategy (provider prices used in cost estimation)
+
+---
+
+## Amendment 2026-09-28
+
+**Corrections.** The original text placed `BudgetGuard` in `guardrails/input_checks.py`, invoked from a LangGraph `__before__` hook, with a pre-call `GET` and `EXPIREAT` next midnight. None of that matched the implementation (LangGraph has no `__before__` hook). The Decision section above now describes the actual design: post-call `INCRBYFLOAT` + `EXPIRE 86400` inside `RoutedLLM`.
+
+**Known gap — concurrency overshoot.** "Atomic increment prevents race conditions" is true for counting, not for enforcement: the check happens after the money is spent. Production-grade options, in order of preference:
+
+1. **Reserve-then-settle** — before the call, atomically reserve the *maximum* possible cost (`max_tokens × output price` + input estimate) with a Lua script that rejects if `spent + reserved + estimate > cap`; after the call, settle the difference. This is how LLM gateways enforce hard caps.
+2. **Pre-call check** (`GET` + compare) — cheap, closes most of the gap, still racy.
+3. **Enforce at the gateway** (e.g. LiteLLM / OmniRoute budgets) — the application no longer owns the counter.
+
+**Revisit when:** more than one API worker serves the same tenant, or caps become contractual (billing) rather than safety limits.
+

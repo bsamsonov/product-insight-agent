@@ -1,6 +1,6 @@
 # ADR-0002 — Vector Database: Qdrant
 
-> Status: Accepted
+> Status: Accepted (amended 2026-09-28)
 > Date: 2026-05-08
 > Deciders: Boris Samsonov (architect)
 
@@ -12,7 +12,7 @@ The Product Insight Agent indexes and retrieves text chunks from review document
 
 - **Dense vector search** (cosine / dot-product similarity) over high-dimensional embeddings (1024-dim for `bge-m3`).
 - **Payload filtering** — every chunk carries structured metadata: `tenant`, `product_id`, `region`, `lang`, `created_at`. Retrieval must filter on these fields with boolean expressions _before_ the ANN scan, not as a post-filter over full results. This is the "pre-filter" or "filtered ANN" requirement.
-- **Multi-tenancy isolation.** Each tenant maps to a separate Qdrant collection (`reviews__{tenant}`). Data never leaks across tenant boundaries at query time.
+- **Multi-tenancy isolation.** Each tenant maps to a separate Qdrant collection (`reviews__{tenant}`), so that data cannot leak across tenant boundaries at query time. *Implementation status:* the index layer supports this, but the POC API still serves every tenant from `reviews__default` — see the ADR-0005 amendment.
 - **Hybrid search (BM25 + dense).** The retrieval layer combines dense ANN with BM25 lexical scores. The database must either support sparse vectors natively or allow the dense index to be the primary store while BM25 runs externally (in-process with `rank_bm25`).
 - **Local development.** The full stack must run on a developer laptop via `docker compose up`. No cloud dependency at development time.
 - **Scale target for POC.** 10k–100k chunks. Production-like architecture but not production-scale load testing.
@@ -89,3 +89,13 @@ For hybrid search in Sprint 1, BM25 runs in-process via `rank_bm25` and results 
 - [pgvector: limitations of filtered ANN](https://github.com/pgvector/pgvector?tab=readme-ov-file#indexing)
 - `docs/planning/06_implementation_plan.md` §S1.T4 — Embedder + Qdrant client spec
 - `docs/planning/05_recommended_poc.md` — storage layer overview
+
+---
+
+## Amendment 2026-09-28
+
+**What changed since 2026-05.** Qdrant's Query API now does hybrid retrieval server-side: `prefetch` a dense query and a sparse query, fuse with `Fusion.RRF` (or DBSF / weighted), optionally re-score — in one round trip. Sparse vectors support `Modifier.IDF`, so BM25-style weighting is computed by Qdrant over the collection. `bge-m3` (our embedder) can itself emit sparse lexical weights, which we currently discard.
+
+**Current state:** BM25 is still computed in-process (`rank_bm25`, rebuilt from the corpus at startup) and fused with Qdrant dense hits by our own RRF in `hybrid.py`. This works at 12k chunks but duplicates the corpus in API memory, is per-process, and ignores tenant isolation for the lexical side. Proposed replacement: Qdrant server-side hybrid (dense + sparse `prefetch`, `Fusion.RRF`) in one collection per tenant.
+
+**Operational note:** `docker-compose.yml` uses `qdrant/qdrant:latest`. Pin a version — hybrid/multitenancy features are version-gated (e.g. tiered multitenancy needs ≥ 1.16).

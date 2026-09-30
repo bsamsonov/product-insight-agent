@@ -88,12 +88,13 @@ async def test_mixed_verdicts():
     assert result.total_count == 2
 
 
-async def test_invalid_json_returns_empty_result():
-    """LLM returns non-JSON → GroundednessResult with score=0.0, no exception."""
+async def test_invalid_json_returns_unavailable_result():
+    """LLM returns non-JSON → score=None (unknown, not ungrounded), no exception."""
     checker = GroundednessChecker(_make_llm("I cannot parse this."), model="gemini-2.5-flash")
     result = await checker.check("Some answer.", ["Some context."])
     assert isinstance(result, GroundednessResult)
-    assert result.score == 0.0
+    assert result.score is None
+    assert result.available is False
     assert result.claims == []
     assert result.total_count == 0
 
@@ -147,3 +148,32 @@ async def test_empty_claims_list_from_llm():
     result = await checker.check("Short.", ["Context."])
     assert result.score == 0.0
     assert result.total_count == 0
+
+
+async def test_structured_envelope_is_parsed():
+    """Structured-output shape {"claims": [...]} is the primary format."""
+    payload = json.dumps(
+        {"claims": [{"claim": "Good grip", "verdict": "supported", "reasoning": "stated"}]}
+    )
+    checker = GroundednessChecker(_make_llm(payload), model="gemini-2.5-flash")
+    result = await checker.check("Good grip.", ["Excellent grip."])
+    assert result.score == 1.0
+    assert result.available is True
+
+
+async def test_requests_structured_output():
+    """The checker asks the provider for the ClaimsEnvelope schema."""
+    from poc.guardrails.groundedness import ClaimsEnvelope
+
+    mock_llm = _make_llm(json.dumps({"claims": []}))
+    await GroundednessChecker(mock_llm, model="m").check("A.", ["ctx"])
+    assert mock_llm.complete.call_args.kwargs["response_format"] is ClaimsEnvelope
+
+
+async def test_json_with_surrounding_prose_is_parsed():
+    """Prose before/after the JSON and a fence without a closing newline still parse."""
+    inner = json.dumps({"claims": [{"claim": "c", "verdict": "partial", "reasoning": "r"}]})
+    raw = f"Here is the evaluation:\n```json\n{inner}```\nHope this helps."
+    checker = GroundednessChecker(_make_llm(raw), model="gemini-2.5-flash")
+    result = await checker.check("c.", ["ctx"])
+    assert result.score == pytest.approx(0.5)

@@ -46,7 +46,6 @@ def make_groundedness_node(
 
         try:
             result = await checker.check(answer_text, context_chunks)
-            score = result.score
         except BudgetExceededError:
             raise  # hard-stop must reach the API layer (S3.T4)
         except Exception as exc:  # checker is fail-soft, but never crash the graph
@@ -54,6 +53,13 @@ def make_groundedness_node(
             judgement["groundedness"] = None
             return {"judgement": judgement, "traces": traces}
 
+        if not result.available:
+            # Unparseable checker output: unknown, not ungrounded — do not escalate.
+            judgement["groundedness"] = None
+            traces.append({"node": "groundedness", "score": None, "unavailable": True})
+            return {"judgement": judgement, "traces": traces}
+
+        score = result.score
         judgement["groundedness"] = score
         escalate = score < threshold
 

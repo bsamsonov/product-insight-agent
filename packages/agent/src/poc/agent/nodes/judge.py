@@ -100,14 +100,16 @@ def make_judge_node(
             raise  # hard-stop must reach the API layer (S3.T4), never swallowed
         except Exception as exc:
             _log.warning("Judge node failed: %s", exc)
-            judgement = {"score": 0.5, "passed": True, "reasoning": "judge unavailable"}
+            # No verdict is not a pass: report it explicitly and send the answer to review.
+            judgement = {"score": None, "passed": False, "reasoning": "judge unavailable"}
             cost = 0.0
 
         # S3.T2: low-confidence verdict from the cheap judge → one re-run through the
         # stronger escalate route. Escalation failure is fail-soft (keep first verdict);
         # budget breaches still propagate.
         escalated = False
-        if judgement.get("score", 1.0) < _ESCALATE_THRESHOLD and escalate_llm is not None:
+        first_score = judgement.get("score")
+        if escalate_llm is not None and (first_score is None or first_score < _ESCALATE_THRESHOLD):
             try:
                 response2 = await escalate_llm.complete(
                     messages,
@@ -124,7 +126,8 @@ def make_judge_node(
             except Exception as exc:
                 _log.warning("Judge escalation failed, keeping first verdict: %s", exc)
 
-        needs_review = judgement.get("score", 1.0) < _JUDGE_THRESHOLD
+        final_score = judgement.get("score")
+        needs_review = final_score is None or final_score < _JUDGE_THRESHOLD
 
         # Build final Answer
         citations = _extract_citations(draft, retrieved)

@@ -16,7 +16,7 @@ You are a factual accuracy evaluator. Given an answer and context chunks, you mu
    - "supported": explicitly supported by the context
    - "partial": partially supported or implied
    - "unsupported": not found in context or contradicts it
-3. Return a JSON array of claims with verdicts.
+3. Return a JSON object with the list of claims and their verdicts.
 
 Context:
 {context}
@@ -24,8 +24,8 @@ Context:
 Answer to evaluate:
 {answer}
 
-Respond with JSON array:
-[{{"claim": "...", "verdict": "supported|partial|unsupported", "reasoning": "..."}}]\
+Respond with JSON only:
+{{"claims": [{{"claim": "...", "verdict": "supported|partial|unsupported", "reasoning": "..."}}]}}\
 """
 
 
@@ -35,11 +35,28 @@ class ClaimVerdict(BaseModel):
     reasoning: str
 
 
+class ClaimsEnvelope(BaseModel):
+    """Structured-output schema sent to the LLM (``response_format``).
+
+    An object, not a bare array: OpenAI-style ``json_object`` mode and most
+    ``json_schema`` implementations require a top-level object.
+    """
+
+    claims: list[ClaimVerdict]
+
+
 class GroundednessResult(BaseModel):
-    score: float  # supported_count + 0.5 * partial_count / total_count
+    # (supported_count + 0.5 * partial_count) / total_count.
+    # ``None`` means the check could not be performed (unparseable LLM output) —
+    # callers must treat that as "unknown", not as "ungrounded".
+    score: float | None
     claims: list[ClaimVerdict]
     supported_count: int
     total_count: int
+
+    @property
+    def available(self) -> bool:
+        return self.score is not None
 
 
 def _compute_score(claims: list[ClaimVerdict]) -> tuple[float, int, int]:
@@ -53,23 +70,41 @@ def _compute_score(claims: list[ClaimVerdict]) -> tuple[float, int, int]:
     return score, supported, total
 
 
-def _parse_claims(raw: str) -> list[ClaimVerdict] | None:
-    """Parse LLM JSON output; return None on any error."""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        # LLM may wrap JSON in markdown fences; strip and retry
-        stripped = raw.strip()
-        if stripped.startswith("```"):
-            lines = stripped.splitlines()
-            inner = "\n".join(lines[1:-1]) if len(lines) > 2 else ""
-            try:
-                data = json.loads(inner)
-            except json.JSONDecodeError:
-                return None
-        else:
-            return None
+def _strip_fence(raw: str) -> str:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text[3:]
+        if text[:4].lower() == "json":
+            text = text[4:]
+        end = text.rfind("```")
+        if end != -1:
+            text = text[:end]
+    return text.strip()
 
+
+def _parse_claims(raw: str) -> list[ClaimVerdict] | None:
+    """Parse LLM output into claims; return None when it cannot be parsed.
+
+    Accepts the structured-output shape ``{"claims": [...]}`` as well as a bare
+    array (older prompts, providers that ignore ``response_format``), optionally
+    wrapped in a markdown fence or surrounded by prose.
+    """
+    text = _strip_fence(raw)
+    data = None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # Prose around the JSON: decode from the first "{" or "[" onwards.
+        decoder = json.JSONDecoder()
+        for i, ch in enumerate(text):
+            if ch in "{[":
+                try:
+                    data, _ = decoder.raw_decode(text, i)
+                    break
+                except json.JSONDecodeError:
+                    continue
+    if isinstance(data, dict):
+        data = data.get("claims")
     if not isinstance(data, list):
         return None
 
@@ -102,8 +137,10 @@ class GroundednessChecker:
     ) -> GroundednessResult:
         """Atomize answer into claims, verify each against context via LLM.
 
-        Falls back to score=0.0, claims=[] if LLM returns unparseable output,
-        rather than raising — callers must not crash because of an eval utility.
+        Asks for structured output (``response_format=ClaimsEnvelope``). If the LLM
+        output still cannot be parsed, returns ``score=None`` (check unavailable)
+        rather than raising or reporting 0.0 — an unparseable verdict says nothing
+        about the answer, so it must not flag it as ungrounded.
         """
         chunks = context_chunks[:max_chunks]
         context_str = "\n\n---\n\n".join(chunks) if chunks else "(no context provided)"
@@ -120,6 +157,7 @@ class GroundednessChecker:
             model=self._model,
             max_tokens=self._max_tokens,
             temperature=0.0,
+            response_format=ClaimsEnvelope,
         )
 
         claims = _parse_claims(response.content)
@@ -128,7 +166,7 @@ class GroundednessChecker:
                 "groundedness_checker: failed to parse LLM output",
                 extra={"raw_output": response.content[:200]},
             )
-            return GroundednessResult(score=0.0, claims=[], supported_count=0, total_count=0)
+            return GroundednessResult(score=None, claims=[], supported_count=0, total_count=0)
 
         score, supported_count, total_count = _compute_score(claims)
         return GroundednessResult(

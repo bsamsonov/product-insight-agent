@@ -107,3 +107,34 @@ async def test_budget_exceeded_in_escalation_propagates() -> None:
     node = make_judge_node(cheap, "cheap-model", escalate_llm=strong)
     with pytest.raises(BudgetExceededError):
         await node(_state_with_draft())
+
+
+async def test_unparseable_judge_output_is_unavailable_and_flags_review() -> None:
+    bad = LLMResponse(
+        content="not json",
+        model="test-model",
+        input_tokens=1,
+        output_tokens=1,
+        cost_usd=0.0,
+        latency_ms=1,
+        finish_reason="stop",
+    )
+    node = make_judge_node(_llm_returning(bad), "cheap-model")
+    result = await node(_state_with_draft())
+
+    assert result["judgement"]["score"] is None
+    assert result["judgement"]["passed"] is False
+    assert result["needs_human_review"] is True
+
+
+async def test_unavailable_judge_escalates_once() -> None:
+    bad = MagicMock()
+    bad.complete = AsyncMock(side_effect=RuntimeError("judge down"))
+    strong = _llm_returning(_judge_response(0.9))
+
+    node = make_judge_node(bad, "cheap-model", escalate_llm=strong)
+    result = await node(_state_with_draft())
+
+    strong.complete.assert_awaited_once()
+    assert result["judgement"]["score"] == 0.9
+    assert result["needs_human_review"] is False

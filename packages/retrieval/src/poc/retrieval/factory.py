@@ -8,6 +8,10 @@ stack. Each component falls back independently:
   already holds points — the heavy BGE-M3 embedder is not even loaded otherwise, and an
   empty collection is never created as a side effect.
 - **Reranker** is the local cross-encoder when it loads, otherwise a no-op.
+
+Corpus consistency: ``scripts/index.py`` records the corpus file in the Qdrant collection
+metadata (``corpus_source``). :func:`select_corpus` uses it so that BM25 is built from the
+same file as the dense index, and :func:`build_hybrid_retriever` warns when they differ.
 """
 
 from __future__ import annotations
@@ -36,10 +40,76 @@ class RetrieverInfo:
     bm25_chunks: int
     dense_points: int
     reranker: str
+    dense_corpus: str | None = None  # corpus file recorded in the Qdrant collection
 
     @property
     def mode(self) -> str:
         return "hybrid" if self.dense_points else "bm25-only"
+
+
+def corpus_label(path: Path, root: Path) -> str:
+    """Portable corpus id: repo-relative POSIX path when under *root*, else absolute."""
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
+def corpus_matches(path: Path, label: str) -> bool:
+    """True when *path* is the file identified by *label* (see :func:`corpus_label`)."""
+    resolved = path.resolve().as_posix()
+    if Path(label).is_absolute():
+        return resolved == Path(label).resolve().as_posix()
+    return resolved == label or resolved.endswith("/" + label)
+
+
+def indexed_corpus(qdrant_url: str, tenant: str) -> str | None:
+    """Corpus file recorded in the tenant collection, or None (no Qdrant / no record)."""
+    try:
+        from poc.retrieval.qdrant_index import read_corpus_source
+        from qdrant_client import QdrantClient
+
+        return read_corpus_source(QdrantClient(url=qdrant_url, timeout=5), f"reviews__{tenant}")
+    except Exception as exc:
+        _log.debug("Could not read indexed corpus from %s: %s", qdrant_url, exc)
+        return None
+
+
+def select_corpus(
+    *,
+    root: Path,
+    override: str | None,
+    indexed: str | None,
+    fallbacks: list[Path],
+) -> Path | None:
+    """Pick the BM25 corpus: explicit override > file the dense index was built from >
+    first existing fallback. Logs a warning whenever BM25 and dense may diverge."""
+
+    def _abs(p: str | Path) -> Path:
+        p = Path(p)
+        return p if p.is_absolute() else root / p
+
+    if override:
+        chosen = _abs(override)
+        if indexed and not corpus_matches(chosen, indexed):
+            _log.warning(
+                "POC_CORPUS_PATH=%s but the Qdrant collection was indexed from %s — "
+                "BM25 and dense retrieval use different corpora",
+                override,
+                indexed,
+            )
+        return chosen
+    if indexed:
+        chosen = _abs(indexed)
+        if chosen.exists():
+            return chosen
+        _log.warning(
+            "Qdrant collection was indexed from %s, which is not on disk — "
+            "falling back to the first available corpus file",
+            indexed,
+        )
+    return next((p for p in fallbacks if _abs(p).exists()), None)
 
 
 def build_bm25(corpus_path: Path, *, limit: int | None = None) -> BM25Index:
@@ -62,8 +132,8 @@ def build_bm25(corpus_path: Path, *, limit: int | None = None) -> BM25Index:
     return bm25
 
 
-def _dense_index(qdrant_url: str, tenant: str) -> tuple[Any, int]:
-    """Return (dense index, point count), or a no-op and 0 when unavailable."""
+def _dense_index(qdrant_url: str, tenant: str) -> tuple[Any, int, str | None]:
+    """Return (dense index, point count, recorded corpus), or a no-op, 0, None."""
     try:
         from qdrant_client import QdrantClient
 
@@ -72,20 +142,21 @@ def _dense_index(qdrant_url: str, tenant: str) -> tuple[Any, int]:
         names = {c.name for c in client.get_collections().collections}
         if collection not in names:
             _log.warning("Qdrant collection %s not found — dense search off", collection)
-            return _NoOpDense(), 0
+            return _NoOpDense(), 0, None
         points = client.count(collection).count
         if points == 0:
             _log.warning("Qdrant collection %s is empty — dense search off", collection)
-            return _NoOpDense(), 0
+            return _NoOpDense(), 0, None
 
         from poc.retrieval.bge_embedder import BgeM3Embedder
-        from poc.retrieval.qdrant_index import QdrantIndex
+        from poc.retrieval.qdrant_index import QdrantIndex, read_corpus_source
 
+        source = read_corpus_source(client, collection)
         index = QdrantIndex(embedder=BgeM3Embedder(), client=client, tenant=tenant)
-        return index, points
+        return index, points, source
     except Exception as exc:
         _log.warning("Qdrant unavailable at %s (%s) — dense search off", qdrant_url, exc)
-        return _NoOpDense(), 0
+        return _NoOpDense(), 0, None
 
 
 def _reranker(enabled: bool) -> tuple[Any, str]:
@@ -112,9 +183,31 @@ def build_hybrid_retriever(
 ) -> tuple[HybridRetriever, RetrieverInfo]:
     """Build the retriever used by the agent. Never raises for missing optional infra."""
     bm25 = build_bm25(corpus_path, limit=bm25_limit)
-    dense, points = _dense_index(qdrant_url, tenant) if use_dense else (_NoOpDense(), 0)
+    dense, points, dense_corpus = (
+        _dense_index(qdrant_url, tenant) if use_dense else (_NoOpDense(), 0, None)
+    )
+    if points:
+        if dense_corpus is None:
+            _log.warning(
+                "Qdrant collection reviews__%s does not record its corpus — re-run "
+                "scripts/index.py so BM25 (%s) and dense search are known to match",
+                tenant,
+                corpus_path,
+            )
+        elif not corpus_matches(corpus_path, dense_corpus):
+            _log.warning(
+                "Corpus mismatch: BM25 uses %s but Qdrant was indexed from %s — "
+                "hybrid results mix two corpora",
+                corpus_path,
+                dense_corpus,
+            )
     reranker, reranker_name = _reranker(use_reranker)
-    info = RetrieverInfo(bm25_chunks=len(bm25), dense_points=points, reranker=reranker_name)
+    info = RetrieverInfo(
+        bm25_chunks=len(bm25),
+        dense_points=points,
+        reranker=reranker_name,
+        dense_corpus=dense_corpus,
+    )
     _log.info(
         "Retriever ready: %s (bm25=%d chunks, dense=%d points, reranker=%s)",
         info.mode,

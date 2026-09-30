@@ -147,6 +147,17 @@ class QdrantIndex:
 
         return results
 
+    def corpus_source(self) -> str | None:
+        """Corpus file this collection was indexed from (collection metadata), if recorded."""
+        return read_corpus_source(self._client, self._collection)
+
+    def set_corpus_source(self, source: str) -> None:
+        """Record the corpus file in the collection metadata (Qdrant >= 1.16).
+
+        The API reads it back to build BM25 from the same corpus as the dense index.
+        """
+        self._client.update_collection(self._collection, metadata={CORPUS_METADATA_KEY: source})
+
     def count(self) -> int:
         info = self._client.get_collection(self._collection)
         return info.points_count or 0
@@ -169,6 +180,20 @@ class QdrantIndex:
         # (PYTHONHASHSEED), so re-indexing the same chunk would create a new
         # point instead of overwriting it. Mod 2**53 keeps it JSON-safe.
         return int(hashlib.sha256(chunk_id.encode()).hexdigest(), 16) % (2**53)
+
+
+CORPUS_METADATA_KEY = "corpus_source"
+
+
+def read_corpus_source(client: QdrantClient, collection: str) -> str | None:
+    """Return the recorded corpus file of *collection*, or None if absent/unsupported."""
+    try:
+        metadata = client.get_collection(collection).config.metadata or {}
+    except Exception as exc:  # old server without collection metadata, or no collection
+        _log.debug("No corpus metadata for %s: %s", collection, exc)
+        return None
+    value = metadata.get(CORPUS_METADATA_KEY)
+    return value if isinstance(value, str) and value else None
 
 
 def _is_scalar(v: Any) -> bool:

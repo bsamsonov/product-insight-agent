@@ -98,21 +98,30 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 def _corpus_path() -> Path | None:
-    """Corpus for BM25: POC_CORPUS_PATH, else the full dataset, else the bundled sample."""
-    override = os.getenv("POC_CORPUS_PATH")
-    candidates = (
-        [Path(override)]
-        if override
-        else [
+    """Corpus for BM25, kept consistent with the dense index.
+
+    Order: ``POC_CORPUS_PATH`` > the file the Qdrant collection was indexed from
+    (recorded by ``scripts/index.py``) > the full dataset > the bundled sample.
+    """
+    from poc.retrieval.factory import indexed_corpus, select_corpus
+
+    indexed = (
+        indexed_corpus(os.getenv("POC_QDRANT_URL", "http://localhost:6333"), "default")
+        if _env_flag("POC_DENSE_RETRIEVAL")
+        else None
+    )
+    chosen = select_corpus(
+        root=_PROJECT_ROOT,
+        override=os.getenv("POC_CORPUS_PATH"),
+        indexed=indexed,
+        fallbacks=[
             _PROJECT_ROOT / "data" / "raw" / "reviews.jsonl",
             _PROJECT_ROOT / "data" / "raw" / "sample_reviews.jsonl",
-        ]
+        ],
     )
-    for path in candidates:
-        path = path if path.is_absolute() else _PROJECT_ROOT / path
-        if path.exists():
-            return path
-    return None
+    if chosen is None or not chosen.exists():
+        return None
+    return chosen
 
 
 def _build_agent(provider: Any, router: Any | None = None) -> Any | None:
